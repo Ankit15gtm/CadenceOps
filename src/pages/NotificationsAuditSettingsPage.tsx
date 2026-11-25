@@ -164,12 +164,27 @@ export function SettingsPage() {
     preventCrossRepSameCampaign: true,
     allowReuseAcrossDifferentCampaigns: true,
   });
+  const [integrations, setIntegrations] = useState({
+    slackWebhookUrl: '',
+    notifyOnAppointment: true,
+    notifyOnLeaveApproval: true,
+    notifyOnSlaAlert: true,
+    defaultTimezone: 'America/New_York',
+  });
+  const [customFields, setCustomFields] = useState<Array<{ key: string; label: string }>>([]);
+  const [newFieldLabel, setNewFieldLabel] = useState('');
 
   const load = useCallback(async () => {
     const [stRes, setRes] = await Promise.all([apiFetch('/api/statuses'), apiFetch('/api/settings')]);
     setStatuses(stRes.statuses);
     if (setRes.settings?.duplicate_policy) {
       setDupPolicy(setRes.settings.duplicate_policy);
+    }
+    if (setRes.settings?.integrations) {
+      setIntegrations((prev) => ({ ...prev, ...setRes.settings.integrations }));
+    }
+    if (Array.isArray(setRes.settings?.custom_fields)) {
+      setCustomFields(setRes.settings.custom_fields);
     }
   }, []);
 
@@ -203,6 +218,28 @@ export function SettingsPage() {
       body: JSON.stringify({ key: 'duplicate_policy', value: dupPolicy }),
     });
     toast.success('Duplicate prevention rules saved.');
+  };
+
+  const saveIntegrations = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ key: 'integrations', value: integrations }),
+      });
+      toast.success('Webhook & alert integration settings saved.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to save integration settings');
+    }
+  };
+
+  const saveCustomFields = async (next: Array<{ key: string; label: string }>) => {
+    await apiFetch('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ key: 'custom_fields', value: next }),
+    });
+    setCustomFields(next);
+    toast.success('Custom company fields updated.');
   };
 
   return (
@@ -266,6 +303,100 @@ export function SettingsPage() {
                   {st.isActive ? 'Disable' : 'Enable'}
                 </Button>
               </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>External Alerts (Slack / HTTPS Webhook) &amp; Regional Defaults</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={saveIntegrations} className="space-y-4 text-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <Label>Slack / Webhook HTTPS Endpoint</Label>
+                <Input
+                  type="url"
+                  value={integrations.slackWebhookUrl}
+                  onChange={(e) => setIntegrations({ ...integrations, slackWebhookUrl: e.target.value })}
+                  placeholder="https://hooks.slack.com/services/..."
+                />
+              </div>
+              <div>
+                <Label>Default Organization Timezone</Label>
+                <Input
+                  value={integrations.defaultTimezone}
+                  onChange={(e) => setIntegrations({ ...integrations, defaultTimezone: e.target.value })}
+                  placeholder="America/New_York"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={integrations.notifyOnAppointment}
+                  onChange={(e) => setIntegrations({ ...integrations, notifyOnAppointment: e.target.checked })}
+                />
+                <span>Send webhook alert when a representative books an appointment</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={integrations.notifyOnLeaveApproval}
+                  onChange={(e) => setIntegrations({ ...integrations, notifyOnLeaveApproval: e.target.checked })}
+                />
+                <span>Send webhook alert when HR approves a leave request</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={integrations.notifyOnSlaAlert}
+                  onChange={(e) => setIntegrations({ ...integrations, notifyOnSlaAlert: e.target.checked })}
+                />
+                <span>Send webhook alert on SLA escalation reminders</span>
+              </label>
+            </div>
+            <Button type="submit" size="sm">Save Integrations</Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Custom Company Attributes</CardTitle></CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          <div className="flex gap-2">
+            <Input
+              placeholder="New attribute label (e.g. Tech Stack)"
+              value={newFieldLabel}
+              onChange={(e) => setNewFieldLabel(e.target.value)}
+            />
+            <Button
+              type="button"
+              onClick={() => {
+                if (!newFieldLabel.trim()) return;
+                const key = newFieldLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                const next = [...customFields.filter((f) => f.key !== key), { key, label: newFieldLabel.trim() }];
+                setNewFieldLabel('');
+                void saveCustomFields(next);
+              }}
+            >
+              <Plus className="h-4 w-4" /> Add Field
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {customFields.map((f) => (
+              <span key={f.key} className="inline-flex items-center gap-2 px-3 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs">
+                <span className="font-medium">{f.label}</span>
+                <span className="font-mono text-slate-400">({f.key})</span>
+                <button
+                  type="button"
+                  className="text-slate-400 hover:text-red-600 cursor-pointer"
+                  onClick={() => void saveCustomFields(customFields.filter((x) => x.key !== f.key))}
+                >
+                  ×
+                </button>
+              </span>
             ))}
           </div>
         </CardContent>

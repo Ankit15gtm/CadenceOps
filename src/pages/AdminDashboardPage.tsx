@@ -16,6 +16,7 @@ import {
 } from 'recharts';
 import { RotateCcw } from 'lucide-react';
 import { apiFetch } from '../lib/api.ts';
+import { formatCurrency } from '../lib/utils.ts';
 import { useAuth } from '../contexts/AuthContext.tsx';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -43,6 +44,14 @@ interface AdminDashboardData {
     totalInterestedProspects: number;
     totalQualifiedLeads: number;
     totalUnqualifiedLeads: number;
+  };
+  funnel?: Array<{ stage: string; count: number }>;
+  pipelineSummary?: {
+    openDealsCount: number;
+    openPipelineValue: number;
+    weightedPipelineValue: number;
+    closedWonValue: number;
+    winRate: number;
   };
   charts: {
     importTrend: Array<{ date: string; companies: number; contacts: number; duplicates: number }>;
@@ -280,6 +289,78 @@ export function AdminDashboardPage() {
           </Card>
         ))}
       </div>
+
+      {/* Conversion Funnel & Pipeline Revenue Strip */}
+      {(data.funnel || data.pipelineSummary) && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {data.funnel && (
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle>Prospect-to-Revenue Conversion Funnel</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2.5">
+                {data.funnel.map((step, idx) => {
+                  const base = Math.max(1, data.funnel?.[0]?.count || 1);
+                  const widthPct = Math.round((step.count / base) * 100);
+                  const prevCount = idx > 0 ? data.funnel![idx - 1]!.count : step.count;
+                  const stepRate = idx > 0 && prevCount > 0 ? Math.round((step.count / prevCount) * 100) : 100;
+                  return (
+                    <div key={step.stage} className="grid grid-cols-12 items-center gap-3 text-xs">
+                      <div className="col-span-4 sm:col-span-3 font-medium text-slate-700 dark:text-slate-200 truncate">
+                        {step.stage}
+                      </div>
+                      <div className="col-span-5 sm:col-span-7 h-5 bg-slate-100 dark:bg-slate-800 rounded overflow-hidden">
+                        <div
+                          className="h-full bg-blue-600 dark:bg-blue-500 transition-all"
+                          style={{ width: `${Math.max(step.count > 0 ? 4 : 0, Math.min(100, widthPct))}%` }}
+                        />
+                      </div>
+                      <div className="col-span-3 sm:col-span-2 text-right font-mono tabular-nums">
+                        <span className="font-semibold">{step.count}</span>
+                        {idx > 0 && <span className="text-slate-400 ml-1">({stepRate}%)</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
+
+          {data.pipelineSummary && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Commercial Deal Pipeline</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500">Open Pipeline ({data.pipelineSummary.openDealsCount})</div>
+                  <div className="font-mono text-lg font-semibold tabular-nums mt-1">
+                    {formatCurrency(data.pipelineSummary.openPipelineValue)}
+                  </div>
+                </div>
+                <div className="p-3 rounded border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500">Weighted Forecast</div>
+                  <div className="font-mono text-lg font-semibold tabular-nums text-blue-700 dark:text-blue-400 mt-1">
+                    {formatCurrency(data.pipelineSummary.weightedPipelineValue)}
+                  </div>
+                </div>
+                <div className="p-3 rounded border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500">Closed Won</div>
+                  <div className="font-mono text-lg font-semibold tabular-nums text-emerald-700 dark:text-emerald-400 mt-1">
+                    {formatCurrency(data.pipelineSummary.closedWonValue)}
+                  </div>
+                </div>
+                <div className="p-3 rounded border border-slate-200 dark:border-slate-800">
+                  <div className="text-slate-500">Deal Win Rate</div>
+                  <div className="font-mono text-lg font-semibold tabular-nums mt-1">
+                    {data.pipelineSummary.winRate}%
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

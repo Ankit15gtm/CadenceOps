@@ -9,9 +9,11 @@ import {
   companies,
   contacts,
   dataRequests,
+  deals,
   followUps,
   importBatches,
   leaveRequests,
+  prospectRemarks,
   users,
 } from '../../db/schema.ts';
 import { AuthRequest, requireAuth, requireRole } from '../auth.ts';
@@ -53,7 +55,7 @@ dashboardRouter.get(
 
       const campaignIdsSet = new Set(filteredCampaigns.map((c) => c.id));
 
-      const [allCompanies, allContacts, allCCRs, allActivities, allFollowUps, allAppointments, allBatches, allUsers] =
+      const [allCompanies, allContacts, allCCRs, allActivities, allFollowUps, allAppointments, allBatches, allUsers, allDeals] =
         await Promise.all([
           db.select().from(companies),
           db.select().from(contacts),
@@ -63,6 +65,7 @@ dashboardRouter.get(
           db.select().from(appointments),
           db.select().from(importBatches),
           db.select().from(users),
+          db.select().from(deals),
         ]);
 
       const scopedCCRs = allCCRs.filter((r) => {
@@ -230,8 +233,45 @@ dashboardRouter.get(
         { status: 'Cancelled', count: scopedFollowUps.filter((f) => f.status === 'CANCELLED').length },
       ];
 
+      const scopedDeals = allDeals.filter((d) => {
+        if (campaignIdFilter && d.campaignId !== campaignIdFilter) return false;
+        if (dataManagerIdFilter && d.campaignId && !campaignIdsSet.has(d.campaignId)) return false;
+        if (salesRepIdFilter && d.ownerId !== salesRepIdFilter) return false;
+        return true;
+      });
+
+      const openDeals = scopedDeals.filter((d) => !['CLOSED_WON', 'CLOSED_LOST'].includes(d.stage));
+      const wonDeals = scopedDeals.filter((d) => d.stage === 'CLOSED_WON');
+      const lostDeals = scopedDeals.filter((d) => d.stage === 'CLOSED_LOST');
+
+      const funnel = [
+        { stage: 'Imported', count: scopedCCRs.length },
+        { stage: 'Assigned', count: totalDistributed },
+        { stage: 'Contacted', count: workedRecords },
+        {
+          stage: 'Interested',
+          count: scopedCCRs.filter((r) => ['INTERESTED', 'QUALIFIED_LEAD', 'APPOINTMENT_BOOKED'].includes(r.status)).length,
+        },
+        {
+          stage: 'Qualified',
+          count: scopedCCRs.filter((r) => ['QUALIFIED_LEAD', 'APPOINTMENT_BOOKED'].includes(r.status)).length,
+        },
+        { stage: 'Appointments Booked', count: summary.totalAppointmentsBooked },
+        { stage: 'Closed Won Deals', count: wonDeals.length },
+      ];
+
+      const pipelineSummary = {
+        openDealsCount: openDeals.length,
+        openPipelineValue: openDeals.reduce((sum, d) => sum + d.amount, 0),
+        weightedPipelineValue: Math.round(openDeals.reduce((sum, d) => sum + (d.amount * d.probability) / 100, 0)),
+        closedWonValue: wonDeals.reduce((sum, d) => sum + d.amount, 0),
+        winRate: wonDeals.length + lostDeals.length > 0 ? Math.round((wonDeals.length / (wonDeals.length + lostDeals.length)) * 100) : 0,
+      };
+
       res.json({
         summary,
+        funnel,
+        pipelineSummary,
         charts: {
           importTrend: Array.from(importByDate.values()).sort((a, b) => a.date.localeCompare(b.date)),
           distributionTrend: Array.from(distByDate.values()).sort((a, b) => a.date.localeCompare(b.date)),
@@ -296,7 +336,33 @@ dashboardRouter.get('/rep', requireAuth, async (req: AuthRequest, res) => {
       dailyMap.set(act.activityDate, cur);
     }
 
+    const [targetUserRows, allReps, allActsGlobal, allApptsGlobal] = await Promise.all([
+      db.select().from(users).where(eq(users.id, targetRepId)).limit(1),
+      db.select().from(users).where(eq(users.role, 'SALES_REP')),
+      db.select().from(activities),
+      db.select().from(appointments),
+    ]);
+    const targetUser = targetUserRows[0];
+
+    const leaderboard = allReps
+      .filter((r) => r.isActive)
+      .map((r) => ({
+        id: r.id,
+        fullName: r.fullName,
+        todayOutreach: allActsGlobal.filter((a) => a.createdById === r.id && a.activityDate === today).length,
+        totalOutreach: allActsGlobal.filter((a) => a.createdById === r.id).length,
+        appointmentsBooked: allApptsGlobal.filter((ap) => ap.assignedToId === r.id && ap.status !== 'CANCELLED').length,
+      }))
+      .sort((a, b) => b.appointmentsBooked - a.appointmentsBooked || b.totalOutreach - a.totalOutreach);
+
     res.json({
+      targets: {
+        dailyCallTarget: targetUser?.dailyCallTarget ?? 35,
+        dailyOutreachTarget: targetUser?.dailyOutreachTarget ?? 60,
+        todayCalls: repActivities.filter((a) => a.activityDate === today && a.channel === 'PHONE_CALL').length,
+        todayOutreach: repActivities.filter((a) => a.activityDate === today).length,
+      },
+      leaderboard,
       summary: {
         assignedCampaigns: myCampaigns.length,
         totalAssignedCompanies: repRecords.length,
@@ -385,7 +451,7 @@ dashboardRouter.get(
       const channel = req.query.channel ? String(req.query.channel) : null;
       const outcome = req.query.outcome ? String(req.query.outcome) : null;
 
-      const [allUsers, allCampaigns, allCCRs, allActivities, allFollowUps, allAppointments, allBatches, allRequests, allCompanies, allContacts] =
+      const [allUsers, allCampaigns, allCCRs, allActivities, allFollowUps, allAppointments, allBatches, allRequests, allCompanies, allContacts, allRemarks] =
         await Promise.all([
           db.select().from(users),
           db.select().from(campaigns),
@@ -397,6 +463,7 @@ dashboardRouter.get(
           db.select().from(dataRequests),
           db.select().from(companies),
           db.select().from(contacts),
+          db.select().from(prospectRemarks).orderBy(desc(prospectRemarks.isPinned), desc(prospectRemarks.createdAt)),
         ]);
 
       const userMap = new Map(allUsers.map((u) => [u.id, u]));
@@ -509,11 +576,27 @@ dashboardRouter.get(
         notes: a.notes,
       }));
 
+      const prospectRemarksList = allRemarks
+        .filter((rm) => (!campaignId || rm.campaignId === campaignId) && (!repId || rm.authorId === repId))
+        .slice(0, 200)
+        .map((rm) => ({
+          id: rm.id,
+          createdAt: rm.createdAt,
+          campaignName: campaignMap.get(rm.campaignId)?.name || 'Campaign',
+          companyName: companyMap.get(rm.companyId)?.name || 'Company',
+          contactName: rm.contactId ? contactMap.get(rm.contactId)?.fullName || '-' : '-',
+          authorName: userMap.get(rm.authorId)?.fullName || 'Team Member',
+          category: rm.category,
+          isPinned: rm.isPinned,
+          content: rm.content,
+        }));
+
       res.json({
         employeePerformance,
         campaignPerformance,
         dataManagerPerformance,
         activityLogs,
+        prospectRemarks: prospectRemarksList,
       });
     } catch (error) {
       console.error('Reports overview error:', error);
@@ -529,7 +612,7 @@ dashboardRouter.get(
   async (req: AuthRequest, res) => {
     try {
       const type = String(req.query.type || 'activities');
-      const [allUsers, allCampaigns, allCompanies, allContacts, allActivities, allCCRs, allAppointments] =
+      const [allUsers, allCampaigns, allCompanies, allContacts, allActivities, allCCRs, allAppointments, allRemarks] =
         await Promise.all([
           db.select().from(users),
           db.select().from(campaigns),
@@ -538,6 +621,7 @@ dashboardRouter.get(
           db.select().from(activities).orderBy(desc(activities.createdAt)),
           db.select().from(campaignCompanyRecords),
           db.select().from(appointments),
+          db.select().from(prospectRemarks).orderBy(desc(prospectRemarks.isPinned), desc(prospectRemarks.createdAt)),
         ]);
 
       const userMap = new Map(allUsers.map((u) => [u.id, u.fullName]));
@@ -561,6 +645,20 @@ dashboardRouter.get(
             String(cRows.filter((r) => r.assignedToId !== null).length),
             String(cRows.filter((r) => r.status !== 'NOT_YET_WORKED').length),
             String(appts),
+          ]);
+        }
+      } else if (type === 'remarks') {
+        rows.push(['Created At', 'Campaign', 'Company', 'Contact', 'Author', 'Category', 'Pinned', 'Remark']);
+        for (const rm of allRemarks) {
+          rows.push([
+            new Date(rm.createdAt).toISOString().slice(0, 16).replace('T', ' '),
+            campaignMap.get(rm.campaignId) || '',
+            companyMap.get(rm.companyId) || '',
+            rm.contactId ? contactMap.get(rm.contactId) || '' : '',
+            userMap.get(rm.authorId) || '',
+            rm.category,
+            rm.isPinned ? 'YES' : 'NO',
+            rm.content,
           ]);
         }
       } else {

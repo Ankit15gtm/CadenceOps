@@ -12,12 +12,16 @@ import {
   campaigns,
   companies,
   contacts,
+  deals,
   followUps,
   importBatches,
   importRecords,
+  outreachTemplates,
+  prospectRemarks,
   users,
 } from '../../db/schema.ts';
 import { AuthRequest, createNotification, logAudit, requireAuth, requireRole } from '../auth.ts';
+import { getDncLookupSets } from '../integrations.ts';
 import {
   computeRecordQualityScores,
   normalizeCompanyName,
@@ -29,6 +33,17 @@ import {
 } from '../normalization.ts';
 
 export const dataRouter = Router();
+
+function csvEscape(val: unknown): string {
+  let str = val == null ? '' : String(val);
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
 
 // ==================== CAMPAIGNS ====================
 dataRouter.get('/campaigns', requireAuth, async (req: AuthRequest, res) => {
@@ -166,7 +181,7 @@ dataRouter.get('/campaigns/:id', requireAuth, async (req: AuthRequest, res) => {
     const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId)).limit(1);
     if (!campaign) return res.status(404).json({ error: 'Campaign not found.' });
 
-    const [allUsers, ccrRows, ccrContacts, members, cmpActivities, cmpFollowUps, cmpAppointments, allCompanies, allContacts] =
+    const [allUsers, ccrRows, ccrContacts, members, cmpActivities, cmpFollowUps, cmpAppointments, cmpRemarks, cmpDeals, allCompanies, allContacts] =
       await Promise.all([
         db.select().from(users),
         db.select().from(campaignCompanyRecords).where(eq(campaignCompanyRecords.campaignId, campaignId)),
@@ -175,6 +190,12 @@ dataRouter.get('/campaigns/:id', requireAuth, async (req: AuthRequest, res) => {
         db.select().from(activities).where(eq(activities.campaignId, campaignId)).orderBy(desc(activities.createdAt)),
         db.select().from(followUps).where(eq(followUps.campaignId, campaignId)).orderBy(desc(followUps.createdAt)),
         db.select().from(appointments).where(eq(appointments.campaignId, campaignId)).orderBy(desc(appointments.createdAt)),
+        db
+          .select()
+          .from(prospectRemarks)
+          .where(eq(prospectRemarks.campaignId, campaignId))
+          .orderBy(desc(prospectRemarks.isPinned), desc(prospectRemarks.createdAt)),
+        db.select().from(deals).where(eq(deals.campaignId, campaignId)),
         db.select().from(companies),
         db.select().from(contacts),
       ]);
@@ -193,10 +214,37 @@ dataRouter.get('/campaigns/:id', requireAuth, async (req: AuthRequest, res) => {
     }
 
     const visibleCCRs = isRep ? ccrRows.filter((r) => r.assignedToId === user.id) : ccrRows;
+    const visibleCCRIds = new Set(visibleCCRs.map((r) => r.id));
     const visibleContacts = isRep ? ccrContacts.filter((r) => r.assignedToId === user.id) : ccrContacts;
     const visibleActs = isRep ? cmpActivities.filter((a) => a.createdById === user.id) : cmpActivities;
     const visibleFups = isRep ? cmpFollowUps.filter((f) => f.assignedToId === user.id) : cmpFollowUps;
     const visibleAppts = isRep ? cmpAppointments.filter((a) => a.assignedToId === user.id) : cmpAppointments;
+    const visibleRemarks = isRep ? cmpRemarks.filter((rm) => visibleCCRIds.has(rm.campaignCompanyRecordId)) : cmpRemarks;
+    const visibleDeals = isRep ? cmpDeals.filter((d) => d.ownerId === user.id) : cmpDeals;
+
+    const funnel = [
+      { stage: 'Imported', count: visibleCCRs.length },
+      { stage: 'Assigned', count: visibleCCRs.filter((r) => r.assignedToId !== null).length },
+      { stage: 'Contacted', count: visibleCCRs.filter((r) => r.status !== 'NOT_YET_WORKED').length },
+      {
+        stage: 'Interested',
+        count: visibleCCRs.filter((r) => ['INTERESTED', 'QUALIFIED_LEAD', 'APPOINTMENT_BOOKED'].includes(r.status)).length,
+      },
+      {
+        stage: 'Qualified',
+        count: visibleCCRs.filter((r) => ['QUALIFIED_LEAD', 'APPOINTMENT_BOOKED'].includes(r.status)).length,
+      },
+      { stage: 'Appointments', count: visibleAppts.filter((a) => a.status !== 'CANCELLED').length },
+      { stage: 'Closed Won Deals', count: visibleDeals.filter((d) => d.stage === 'CLOSED_WON').length },
+    ];
+
+    const dealsSummary = {
+      totalDeals: visibleDeals.length,
+      openValue: visibleDeals
+        .filter((d) => !['CLOSED_WON', 'CLOSED_LOST'].includes(d.stage))
+        .reduce((sum, d) => sum + d.amount, 0),
+      wonValue: visibleDeals.filter((d) => d.stage === 'CLOSED_WON').reduce((sum, d) => sum + d.amount, 0),
+    };
 
     res.json({
       campaign: {
@@ -204,8 +252,12 @@ dataRouter.get('/campaigns/:id', requireAuth, async (req: AuthRequest, res) => {
         campaignManagerName: campaign.campaignManagerId ? userMap.get(campaign.campaignManagerId)?.fullName : null,
         dataManagerName: campaign.dataManagerId ? userMap.get(campaign.dataManagerId)?.fullName : null,
       },
+      funnel,
+      dealsSummary,
       companies: visibleCCRs.map((r) => {
         const comp = companyMap.get(r.companyId);
+        const recRemarks = visibleRemarks.filter((rm) => rm.campaignCompanyRecordId === r.id);
+        const topRemark = recRemarks[0] || null;
         return {
           ...r,
           companyName: comp?.name || 'Unknown',
@@ -217,6 +269,17 @@ dataRouter.get('/campaigns/:id', requireAuth, async (req: AuthRequest, res) => {
           aiScore: comp?.aiScore ?? 0,
           fitScore: comp?.fitScore ?? 0,
           assignedToName: r.assignedToId ? userMap.get(r.assignedToId)?.fullName || null : null,
+          remarksCount: recRemarks.length,
+          latestRemark: topRemark
+            ? {
+                id: topRemark.id,
+                category: topRemark.category,
+                content: topRemark.content,
+                isPinned: topRemark.isPinned,
+                authorName: userMap.get(topRemark.authorId)?.fullName || 'Rep',
+                createdAt: topRemark.createdAt,
+              }
+            : null,
         };
       }),
       contacts: visibleContacts.map((cc) => {
@@ -262,6 +325,13 @@ dataRouter.get('/campaigns/:id', requireAuth, async (req: AuthRequest, res) => {
         ...ap,
         companyName: companyMap.get(ap.companyId)?.name || '',
         repName: userMap.get(ap.assignedToId)?.fullName || '',
+      })),
+      remarks: visibleRemarks.map((rm) => ({
+        ...rm,
+        companyName: companyMap.get(rm.companyId)?.name || '',
+        contactName: rm.contactId ? contactMap.get(rm.contactId)?.fullName || null : null,
+        authorName: userMap.get(rm.authorId)?.fullName || 'Team Member',
+        authorRole: userMap.get(rm.authorId)?.role || 'SALES_REP',
       })),
     });
   } catch (error) {
@@ -372,6 +442,92 @@ dataRouter.post('/campaigns/:id/members', requireAuth, requireRole('SUPER_ADMIN'
   }
 });
 
+dataRouter.post(
+  '/campaigns/:id/clone',
+  requireAuth,
+  requireRole('SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'),
+  async (req: AuthRequest, res) => {
+    try {
+      const sourceId = Number(req.params.id);
+      const [source] = await db.select().from(campaigns).where(eq(campaigns.id, sourceId)).limit(1);
+      if (!source) return res.status(404).json({ error: 'Campaign not found.' });
+
+      const existingCount = await db.select({ count: sql<number>`count(*)::int` }).from(campaigns);
+      const code = `CMP-${new Date().getFullYear()}-${String((existingCount[0]?.count ?? 0) + 1).padStart(3, '0')}`;
+      const requestedName = req.body?.name ? String(req.body.name).trim() : '';
+
+      const [cloned] = await db
+        .insert(campaigns)
+        .values({
+          campaignCode: code,
+          name: requestedName || `${source.name} (Copy)`,
+          description: source.description,
+          clientName: source.clientName,
+          objective: source.objective,
+          targetIndustry: source.targetIndustry,
+          targetCountries: source.targetCountries,
+          targetJobTitles: source.targetJobTitles,
+          targetCompanySize: source.targetCompanySize,
+          startDate: new Date().toISOString().slice(0, 10),
+          endDate: null,
+          campaignManagerId: source.campaignManagerId || req.currentUser!.id,
+          dataManagerId: source.dataManagerId || req.currentUser!.id,
+          status: 'DRAFT',
+          targetCompaniesCount: source.targetCompaniesCount,
+          notes: source.notes,
+          instructions: source.instructions,
+          qualificationCriteria: source.qualificationCriteria,
+          qualificationQuestions: source.qualificationQuestions,
+          allowDuplicateAssignments: source.allowDuplicateAssignments,
+          createdById: req.currentUser!.id,
+        })
+        .returning();
+
+      const [sourceMembers, sourceTemplates] = await Promise.all([
+        db.select().from(campaignMembers).where(eq(campaignMembers.campaignId, sourceId)),
+        db.select().from(outreachTemplates).where(eq(outreachTemplates.campaignId, sourceId)),
+      ]);
+
+      for (const m of sourceMembers) {
+        await db
+          .insert(campaignMembers)
+          .values({
+            campaignId: cloned.id,
+            userId: m.userId,
+            memberRole: m.memberRole,
+            allocatedQuota: m.allocatedQuota,
+          })
+          .onConflictDoNothing();
+      }
+
+      for (const tpl of sourceTemplates) {
+        await db.insert(outreachTemplates).values({
+          campaignId: cloned.id,
+          name: tpl.name,
+          channel: tpl.channel,
+          subject: tpl.subject,
+          body: tpl.body,
+          createdById: req.currentUser!.id,
+        });
+      }
+
+      await logAudit({
+        user: req.currentUser,
+        action: 'CAMPAIGN_CLONED',
+        entity: 'campaign',
+        entityId: cloned.id,
+        previousValue: { sourceCampaignId: source.id, sourceName: source.name },
+        newValue: { clonedName: cloned.name, campaignCode: cloned.campaignCode },
+      });
+
+      res.status(201).json({ campaign: cloned });
+    } catch (error) {
+      console.error('Clone campaign error:', error);
+      res.status(500).json({ error: 'Failed to clone campaign.' });
+    }
+  }
+);
+
 // ==================== COMPANIES & CONTACTS ====================
 dataRouter.get('/companies', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -392,7 +548,9 @@ dataRouter.get('/companies', requireAuth, async (req: AuthRequest, res) => {
       allowedCompanyIds = new Set(allCCRs.filter((r) => r.assignedToId === user.id).map((r) => r.companyId));
     }
 
+    const includeArchived = req.query.includeArchived === 'true';
     const filtered = allCompanies.filter((c) => {
+      if (!includeArchived && c.isArchived) return false;
       if (allowedCompanyIds && !allowedCompanyIds.has(c.id)) return false;
       if (industry && c.industry !== industry) return false;
       if (country && c.country !== country) return false;
@@ -421,6 +579,66 @@ dataRouter.get('/companies', requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
+dataRouter.get('/companies/export', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const user = req.currentUser!;
+    const search = String(req.query.search || '').trim().toLowerCase();
+    const validation = String(req.query.validation || '').trim();
+    const includeArchived = req.query.includeArchived === 'true';
+
+    const [allCompanies, allContacts, allCCRs] = await Promise.all([
+      db.select().from(companies).orderBy(desc(companies.createdAt)),
+      db.select().from(contacts),
+      db.select().from(campaignCompanyRecords),
+    ]);
+
+    const allowedCompanyIds =
+      user.role === 'SALES_REP'
+        ? new Set(allCCRs.filter((r) => r.assignedToId === user.id).map((r) => r.companyId))
+        : null;
+
+    const filtered = allCompanies.filter((c) => {
+      if (!includeArchived && c.isArchived) return false;
+      if (allowedCompanyIds && !allowedCompanyIds.has(c.id)) return false;
+      if (validation && c.validationStatus !== validation) return false;
+      if (search) {
+        const hay = `${c.name} ${c.domain || ''} ${c.industry || ''} ${c.country || ''}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+
+    const rows: string[][] = [
+      ['Company Name', 'Domain', 'Website', 'Industry', 'Employees', 'Country', 'Revenue', 'Timezone', 'AI Score', 'Fit Score', 'Validation', 'Contacts'],
+    ];
+    for (const c of filtered) {
+      const cnt = allContacts.filter((ct) => ct.companyId === c.id).length;
+      rows.push([
+        c.name,
+        c.domain || '',
+        c.website || '',
+        c.industry || '',
+        c.employeeSize || '',
+        c.country || '',
+        c.revenue || '',
+        c.timezone || '',
+        String(c.aiScore ?? 0),
+        String(c.fitScore ?? 0),
+        c.validationStatus,
+        String(cnt),
+      ]);
+    }
+
+    const csv = rows.map((r) => r.map(csvEscape).join(',')).join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="cadenceops_companies_${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    console.error('Export companies error:', error);
+    res.status(500).json({ error: 'Failed to export companies.' });
+  }
+});
+
 dataRouter.post('/companies', requireAuth, requireRole('SUPER_ADMIN', 'DATA_MANAGER'), async (req: AuthRequest, res) => {
   try {
     const body = req.body as Record<string, any>;
@@ -430,6 +648,13 @@ dataRouter.post('/companies', requireAuth, requireRole('SUPER_ADMIN', 'DATA_MANA
     const normDomain = normalizeDomain(body.domain || body.website);
     const normName = normalizeCompanyName(name);
     const normLinkedin = normalizeLinkedin(body.linkedinUrl);
+
+    const dnc = await getDncLookupSets();
+    if (normDomain && dnc.domains.has(normDomain)) {
+      return res.status(409).json({
+        error: `Blocked by Global DNC Suppression List: domain "${normDomain}" is suppressed.`,
+      });
+    }
 
     const allCompanies = await db.select().from(companies);
     const duplicate = allCompanies.find(
@@ -474,7 +699,9 @@ dataRouter.post('/companies', requireAuth, requireRole('SUPER_ADMIN', 'DATA_MANA
         state: body.state || null,
         city: body.city || null,
         revenue: body.revenue || null,
+        timezone: body.timezone || 'America/New_York',
         description: body.description || null,
+        customFields: body.customFields && typeof body.customFields === 'object' ? body.customFields : {},
         aiScore: scores.aiScore,
         fitScore: scores.fitScore,
         dataSource: body.dataSource || 'Manual',
@@ -517,10 +744,15 @@ dataRouter.get('/companies/:id', requireAuth, async (req: AuthRequest, res) => {
     const [company] = await db.select().from(companies).where(eq(companies.id, companyId)).limit(1);
     if (!company) return res.status(404).json({ error: 'Company not found.' });
 
-    const [companyContacts, ccrRows, companyActivities, allCampaigns, allUsers] = await Promise.all([
+    const [companyContacts, ccrRows, companyActivities, companyRemarks, allCampaigns, allUsers] = await Promise.all([
       db.select().from(contacts).where(eq(contacts.companyId, companyId)),
       db.select().from(campaignCompanyRecords).where(eq(campaignCompanyRecords.companyId, companyId)),
       db.select().from(activities).where(eq(activities.companyId, companyId)).orderBy(desc(activities.createdAt)),
+      db
+        .select()
+        .from(prospectRemarks)
+        .where(eq(prospectRemarks.companyId, companyId))
+        .orderBy(desc(prospectRemarks.isPinned), desc(prospectRemarks.createdAt)),
       db.select().from(campaigns),
       db.select().from(users),
     ]);
@@ -534,6 +766,9 @@ dataRouter.get('/companies/:id', requireAuth, async (req: AuthRequest, res) => {
 
     const campaignMap = new Map(allCampaigns.map((c) => [c.id, c.name]));
     const userMap = new Map(allUsers.map((u) => [u.id, u.fullName]));
+    const userRoleMap = new Map(allUsers.map((u) => [u.id, u.role]));
+    const contactMap = new Map(companyContacts.map((ct) => [ct.id, ct.fullName]));
+    const repCCRIds = new Set(ccrRows.filter((r) => r.assignedToId === user.id).map((r) => r.id));
 
     res.json({
       company,
@@ -544,6 +779,15 @@ dataRouter.get('/companies/:id', requireAuth, async (req: AuthRequest, res) => {
           ...r,
           campaignName: campaignMap.get(r.campaignId) || 'Campaign',
           assignedToName: r.assignedToId ? userMap.get(r.assignedToId) || null : null,
+        })),
+      remarks: companyRemarks
+        .filter((rm) => user.role !== 'SALES_REP' || repCCRIds.has(rm.campaignCompanyRecordId))
+        .map((rm) => ({
+          ...rm,
+          campaignName: campaignMap.get(rm.campaignId) || 'Campaign',
+          contactName: rm.contactId ? contactMap.get(rm.contactId) || null : null,
+          authorName: userMap.get(rm.authorId) || 'Team Member',
+          authorRole: userRoleMap.get(rm.authorId) || 'SALES_REP',
         })),
       activities: companyActivities
         .filter((a) => user.role !== 'SALES_REP' || a.createdById === user.id)
@@ -576,7 +820,9 @@ dataRouter.get('/contacts', requireAuth, async (req: AuthRequest, res) => {
       allowedCompanyIds = new Set(allCCRs.filter((r) => r.assignedToId === user.id).map((r) => r.companyId));
     }
 
+    const includeArchived = req.query.includeArchived === 'true';
     const filtered = allContacts.filter((ct) => {
+      if (!includeArchived && ct.isArchived) return false;
       if (allowedCompanyIds && !allowedCompanyIds.has(ct.companyId)) return false;
       if (search) {
         const comp = companyMap.get(ct.companyId);
@@ -596,6 +842,63 @@ dataRouter.get('/contacts', requireAuth, async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('List contacts error:', error);
     res.status(500).json({ error: 'Failed to load contacts.' });
+  }
+});
+
+dataRouter.get('/contacts/export', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const user = req.currentUser!;
+    const search = String(req.query.search || '').trim().toLowerCase();
+    const includeArchived = req.query.includeArchived === 'true';
+
+    const [allContacts, allCompanies, allCCRs] = await Promise.all([
+      db.select().from(contacts).orderBy(desc(contacts.createdAt)),
+      db.select().from(companies),
+      db.select().from(campaignCompanyRecords),
+    ]);
+
+    const companyMap = new Map(allCompanies.map((c) => [c.id, c]));
+    const allowedCompanyIds =
+      user.role === 'SALES_REP'
+        ? new Set(allCCRs.filter((r) => r.assignedToId === user.id).map((r) => r.companyId))
+        : null;
+
+    const filtered = allContacts.filter((ct) => {
+      if (!includeArchived && ct.isArchived) return false;
+      if (allowedCompanyIds && !allowedCompanyIds.has(ct.companyId)) return false;
+      if (search) {
+        const comp = companyMap.get(ct.companyId);
+        const hay = `${ct.fullName} ${ct.workEmail || ''} ${ct.jobTitle || ''} ${comp?.name || ''}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+
+    const rows: string[][] = [
+      ['Full Name', 'Company', 'Job Title', 'Seniority', 'Department', 'Work Email', 'Phone', 'LinkedIn', 'Do Not Contact', 'Validation'],
+    ];
+    for (const ct of filtered) {
+      rows.push([
+        ct.fullName,
+        companyMap.get(ct.companyId)?.name || '',
+        ct.jobTitle || '',
+        ct.seniority || '',
+        ct.department || '',
+        ct.workEmail || '',
+        ct.phone || '',
+        ct.linkedinUrl || '',
+        ct.doNotContact ? 'YES' : 'NO',
+        ct.validationStatus,
+      ]);
+    }
+
+    const csv = rows.map((r) => r.map(csvEscape).join(',')).join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="cadenceops_contacts_${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    console.error('Export contacts error:', error);
+    res.status(500).json({ error: 'Failed to export contacts.' });
   }
 });
 
@@ -713,13 +1016,14 @@ dataRouter.post('/imports/preview', requireAuth, requireRole('SUPER_ADMIN', 'DAT
       return res.status(400).json({ error: 'No rows provided for preview.' });
     }
 
-    const [allCompanies, allContacts, allCCRs, allCampaigns, allUsers, allActivities] = await Promise.all([
+    const [allCompanies, allContacts, allCCRs, allCampaigns, allUsers, allActivities, dnc] = await Promise.all([
       db.select().from(companies),
       db.select().from(contacts),
       db.select().from(campaignCompanyRecords),
       db.select().from(campaigns),
       db.select().from(users),
       db.select().from(activities),
+      getDncLookupSets(),
     ]);
 
     const campaignMap = new Map(allCampaigns.map((c) => [c.id, c.name]));
@@ -809,13 +1113,20 @@ dataRouter.post('/imports/preview', requireAuth, requireRole('SUPER_ADMIN', 'DAT
         };
       }
 
+      const isDncSuppressed = Boolean(
+        (normDomain && dnc.domains.has(normDomain)) ||
+          (normEmail && dnc.emails.has(normEmail)) ||
+          (normPhone && dnc.phones.has(normPhone))
+      );
+
       return {
         rowNumber,
         raw: row,
-        validationStatus: quality.validationStatus,
-        issues: quality.issues,
+        validationStatus: isDncSuppressed ? 'INVALID' : quality.validationStatus,
+        issues: isDncSuppressed ? [...quality.issues, 'Matched Global DNC Suppression List'] : quality.issues,
         aiScore: quality.aiScore,
         fitScore: quality.fitScore,
+        isDncSuppressed,
         isDuplicate: Boolean(duplicateInfo),
         duplicateInfo,
       };
@@ -824,8 +1135,9 @@ dataRouter.post('/imports/preview', requireAuth, requireRole('SUPER_ADMIN', 'DAT
     res.json({
       summary: {
         totalRows: analyzed.length,
-        validNewRows: analyzed.filter((r) => r.validationStatus !== 'INVALID' && !r.isDuplicate).length,
+        validNewRows: analyzed.filter((r) => r.validationStatus !== 'INVALID' && !r.isDuplicate && !r.isDncSuppressed).length,
         duplicatesDetected: analyzed.filter((r) => r.isDuplicate).length,
+        dncSuppressedRows: analyzed.filter((r) => r.isDncSuppressed).length,
         invalidRows: analyzed.filter((r) => r.validationStatus === 'INVALID').length,
         missingInfoRows: analyzed.filter((r) => r.validationStatus === 'MISSING_INFO').length,
       },
@@ -878,6 +1190,7 @@ dataRouter.post('/imports/commit', requireAuth, requireRole('SUPER_ADMIN', 'DATA
 
     const allCompanies = await db.select().from(companies);
     const allContacts = await db.select().from(contacts);
+    const dnc = await getDncLookupSets();
 
     let importedCompaniesCount = 0;
     let importedContactsCount = 0;
@@ -897,6 +1210,29 @@ dataRouter.post('/imports/commit', requireAuth, requireRole('SUPER_ADMIN', 'DATA
       const normEmail = normalizeEmail(row.workEmail);
       const normPhone = normalizePhone(row.phone);
       const normContactLi = normalizeLinkedin(row.contactLinkedinUrl);
+
+      const isDncSuppressed = Boolean(
+        (normDomain && dnc.domains.has(normDomain)) ||
+          (normEmail && dnc.emails.has(normEmail)) ||
+          (normPhone && dnc.phones.has(normPhone))
+      );
+
+      if (isDncSuppressed) {
+        invalidCount++;
+        invalidReport.push({
+          rowNumber,
+          companyName: compName || '(empty)',
+          issues: ['Blocked by Global DNC Suppression List'],
+        });
+        await db.insert(importRecords).values({
+          batchId: batch.id,
+          rowNumber,
+          outcome: 'DNC_SUPPRESSED',
+          details: 'Blocked by Global Do-Not-Contact suppression list',
+          rawPayload: row,
+        });
+        continue;
+      }
 
       const quality = computeRecordQualityScores({
         companyName: compName,

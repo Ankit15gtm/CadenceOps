@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Download, FileSpreadsheet } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiDownloadCsv, apiFetch } from '../lib/api.ts';
 import { formatCodeLabel } from '../lib/utils.ts';
+import { getRemarkCategoryLabel, getRemarkCategoryStyle } from '../lib/remarks.ts';
 import { Card, CardContent } from '../components/ui/card.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Input, Label, SelectField } from '../components/ui/form.tsx';
@@ -10,7 +12,7 @@ import { StatusLabel } from '../components/StatusLabel.tsx';
 
 export function ReportsPage() {
   const [data, setData] = useState<any>(null);
-  const [tab, setTab] = useState<'employees' | 'campaigns' | 'datamanagers' | 'activities'>('employees');
+  const [tab, setTab] = useState<'employees' | 'campaigns' | 'datamanagers' | 'activities' | 'remarks'>('employees');
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -36,7 +38,7 @@ export function ReportsPage() {
     load();
   }, [load]);
 
-  const exportCsv = async (type: 'activities' | 'campaigns') => {
+  const exportCsv = async (type: 'activities' | 'campaigns' | 'remarks') => {
     try {
       await apiDownloadCsv(`/api/reports/export?type=${type}`, `cadenceops_${type}_report.csv`);
       toast.success('CSV report downloaded.');
@@ -45,8 +47,20 @@ export function ReportsPage() {
     }
   };
 
+  const exportExcel = () => {
+    if (!data) return;
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.employeePerformance || []), 'Employees');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.campaignPerformance || []), 'Campaigns');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.dataManagerPerformance || []), 'DataManagers');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.activityLogs || []), 'ActivityLogs');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.prospectRemarks || []), 'ProspectRemarks');
+    XLSX.writeFile(wb, `cadenceops_operations_report_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast.success('Excel (.xlsx) workbook downloaded.');
+  };
+
   if (!data) {
-    return <div className="h-64 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 animate-pulse" />;
+    return <div className="h-64 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900" />;
   }
 
   return (
@@ -57,15 +71,21 @@ export function ReportsPage() {
             Sales Operations &amp; Performance Reports
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Compare representative output, campaign conversion, data manager throughput, and export activity logs.
+            Compare representative output, campaign conversion, data manager throughput, and export CSV or Excel workbooks.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => exportCsv('campaigns')}>
             <Download className="h-3.5 w-3.5" /> Campaigns CSV
           </Button>
-          <Button size="sm" onClick={() => exportCsv('activities')}>
+          <Button variant="outline" size="sm" onClick={() => exportCsv('activities')}>
             <Download className="h-3.5 w-3.5" /> Activities CSV
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => exportCsv('remarks')}>
+            <Download className="h-3.5 w-3.5" /> Remarks CSV
+          </Button>
+          <Button size="sm" onClick={exportExcel}>
+            <FileSpreadsheet className="h-3.5 w-3.5" /> Export Excel (.xlsx)
           </Button>
         </div>
       </div>
@@ -101,6 +121,7 @@ export function ReportsPage() {
           { id: 'campaigns', label: 'Campaign Performance' },
           { id: 'datamanagers', label: 'Data Manager Performance' },
           { id: 'activities', label: 'Activity Report' },
+          { id: 'remarks', label: 'Prospect Remarks' },
         ].map((t) => (
           <button
             key={t.id}
@@ -246,6 +267,44 @@ export function ReportsPage() {
                     <td className="py-2.5 px-4 text-slate-500 max-w-xs truncate">{a.notes || '—'}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {tab === 'remarks' && (
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
+              <thead className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                <tr>
+                  <th className="py-2.5 px-4 font-medium">Date</th>
+                  <th className="py-2.5 px-4 font-medium">Campaign</th>
+                  <th className="py-2.5 px-4 font-medium">Company</th>
+                  <th className="py-2.5 px-4 font-medium">Author</th>
+                  <th className="py-2.5 px-4 font-medium">Category</th>
+                  <th className="py-2.5 px-4 font-medium">Remark</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {(data.prospectRemarks || []).map((rm: any) => (
+                  <tr key={rm.id}>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{new Date(rm.createdAt).toLocaleDateString()}</td>
+                    <td className="py-2.5 px-4">{rm.campaignName}</td>
+                    <td className="py-2.5 px-4 font-medium">{rm.companyName}</td>
+                    <td className="py-2.5 px-4">{rm.authorName}</td>
+                    <td className="py-2.5 px-4">
+                      <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${getRemarkCategoryStyle(rm.category)}`}>
+                        {getRemarkCategoryLabel(rm.category)}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300 max-w-md whitespace-pre-line">{rm.content}</td>
+                  </tr>
+                ))}
+                {(data.prospectRemarks || []).length === 0 && (
+                  <tr><td colSpan={6} className="py-8 text-center text-slate-500">No prospect remarks found for these filters.</td></tr>
+                )}
               </tbody>
             </table>
           </div>

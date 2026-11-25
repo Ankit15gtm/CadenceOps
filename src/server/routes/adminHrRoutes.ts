@@ -4,7 +4,11 @@ import { eq, desc, sql } from 'drizzle-orm';
 import { db } from '../../db/index.ts';
 import {
   appSettings,
+  assignmentHistory,
+  assignments,
   auditLogs,
+  campaignCompanyRecords,
+  followUps,
   leaveRequests,
   notifications,
   prospectStatuses,
@@ -12,6 +16,7 @@ import {
 } from '../../db/schema.ts';
 import {
   AuthRequest,
+  createNotification,
   hashPassword,
   hashToken,
   logAudit,
@@ -19,6 +24,7 @@ import {
   requireRole,
   sanitizeUser,
 } from '../auth.ts';
+import { dispatchExternalAlert, validateSafeWebhookUrl } from '../integrations.ts';
 
 export const adminHrRouter = Router();
 
@@ -353,15 +359,131 @@ adminHrRouter.patch(
     try {
       const id = Number(req.params.id);
       const { status } = req.body as { status: string };
+      const [existing] = await db.select().from(leaveRequests).where(eq(leaveRequests.id, id)).limit(1);
+      if (!existing) return res.status(404).json({ error: 'Leave request not found.' });
+
       const [updated] = await db
         .update(leaveRequests)
         .set({ status, reviewedById: req.currentUser!.id })
         .where(eq(leaveRequests.id, id))
         .returning();
-      res.json({ leave: updated });
+
+      let impactedFollowUps = 0;
+      let unworkedAssigned = 0;
+
+      if (status === 'APPROVED') {
+        const [fups, ccrs, empRows] = await Promise.all([
+          db.select().from(followUps).where(eq(followUps.assignedToId, existing.userId)),
+          db.select().from(campaignCompanyRecords).where(eq(campaignCompanyRecords.assignedToId, existing.userId)),
+          db.select().from(users).where(eq(users.id, existing.userId)).limit(1),
+        ]);
+        const emp = empRows[0];
+        impactedFollowUps = fups.filter(
+          (f) => f.status === 'PENDING' && f.followUpDate >= existing.startDate && f.followUpDate <= existing.endDate
+        ).length;
+        unworkedAssigned = ccrs.filter((r) => r.status === 'NOT_YET_WORKED').length;
+
+        await createNotification({
+          userId: existing.userId,
+          type: 'LEAVE_APPROVED',
+          title: 'Leave Request Approved',
+          message: `Your leave (${existing.startDate} to ${existing.endDate}) was approved.`,
+          linkPath: '/leaves',
+        });
+
+        if (impactedFollowUps > 0 || unworkedAssigned > 0) {
+          const managers = await db.select().from(users);
+          for (const mgr of managers.filter((m) => ['SUPER_ADMIN', 'CAMPAIGN_MANAGER', 'DATA_MANAGER'].includes(m.role))) {
+            await createNotification({
+              userId: mgr.id,
+              type: 'LEAVE_COVERAGE_NEEDED',
+              title: `Leave Coverage Alert: ${emp?.fullName || 'Rep'}`,
+              message: `${impactedFollowUps} follow-up(s) during leave and ${unworkedAssigned} unworked queue record(s) may need handoff.`,
+              linkPath: '/leaves',
+            });
+          }
+        }
+
+        await dispatchExternalAlert({
+          event: 'LEAVE_APPROVED',
+          title: `Leave Approved: ${emp?.fullName || 'Team Member'}`,
+          message: `${existing.startDate} to ${existing.endDate}. Pending follow-ups in window: ${impactedFollowUps}.`,
+        });
+      }
+
+      res.json({ leave: updated, impactedFollowUps, unworkedAssigned });
     } catch (error) {
       console.error('Update leave error:', error);
       res.status(500).json({ error: 'Failed to update leave request.' });
+    }
+  }
+);
+
+adminHrRouter.post(
+  '/hr/leaves/:id/reassign-work',
+  requireAuth,
+  requireRole('SUPER_ADMIN', 'HR_MANAGER', 'CAMPAIGN_MANAGER', 'DATA_MANAGER'),
+  async (req: AuthRequest, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { coverRepId, includeQueueRecords = false } = req.body as {
+        coverRepId?: number;
+        includeQueueRecords?: boolean;
+      };
+      if (!coverRepId) return res.status(400).json({ error: 'Select a covering sales representative.' });
+
+      const [leave] = await db.select().from(leaveRequests).where(eq(leaveRequests.id, id)).limit(1);
+      if (!leave) return res.status(404).json({ error: 'Leave request not found.' });
+
+      const fups = await db.select().from(followUps).where(eq(followUps.assignedToId, leave.userId));
+      const overlappingFups = fups.filter(
+        (f) => f.status === 'PENDING' && f.followUpDate >= leave.startDate && f.followUpDate <= leave.endDate
+      );
+
+      for (const f of overlappingFups) {
+        await db
+          .update(followUps)
+          .set({ assignedToId: Number(coverRepId), updatedAt: new Date() })
+          .where(eq(followUps.id, f.id));
+      }
+
+      let reassignedQueue = 0;
+      if (includeQueueRecords) {
+        const ccrs = await db.select().from(campaignCompanyRecords).where(eq(campaignCompanyRecords.assignedToId, leave.userId));
+        for (const ccr of ccrs.filter((r) => r.status === 'NOT_YET_WORKED')) {
+          await db
+            .update(assignments)
+            .set({ status: 'REASSIGNED' })
+            .where(sql`${assignments.campaignCompanyRecordId} = ${ccr.id} AND ${assignments.status} = 'ACTIVE'`);
+          await db
+            .update(campaignCompanyRecords)
+            .set({ assignedToId: Number(coverRepId), assignedById: req.currentUser!.id, updatedAt: new Date() })
+            .where(eq(campaignCompanyRecords.id, ccr.id));
+          await db.insert(assignmentHistory).values({
+            campaignId: ccr.campaignId,
+            campaignCompanyRecordId: ccr.id,
+            previousAssigneeId: leave.userId,
+            newAssigneeId: Number(coverRepId),
+            changedById: req.currentUser!.id,
+            action: 'REASSIGNED_LEAVE',
+            reason: `Leave coverage (${leave.startDate} to ${leave.endDate})`,
+          });
+          reassignedQueue++;
+        }
+      }
+
+      await createNotification({
+        userId: Number(coverRepId),
+        type: 'LEAVE_COVERAGE_ASSIGNED',
+        title: `Leave Coverage Assigned`,
+        message: `Transferred ${overlappingFups.length} follow-up(s) and ${reassignedQueue} queue record(s) for coverage.`,
+        linkPath: '/follow-ups',
+      });
+
+      res.json({ reassignedFollowUps: overlappingFups.length, reassignedQueue });
+    } catch (error) {
+      console.error('Reassign leave work error:', error);
+      res.status(500).json({ error: 'Failed to reassign leave coverage.' });
     }
   }
 );
@@ -494,6 +616,17 @@ adminHrRouter.patch('/statuses/:id', requireAuth, requireRole('SUPER_ADMIN'), as
   }
 });
 
+adminHrRouter.get('/custom-fields', requireAuth, async (_req, res) => {
+  try {
+    const [row] = await db.select().from(appSettings).where(eq(appSettings.key, 'custom_fields')).limit(1);
+    const value = (row?.value as { companyFields?: string[] } | undefined) || {};
+    res.json({ companyFields: Array.isArray(value.companyFields) ? value.companyFields : [] });
+  } catch (error) {
+    console.error('Get custom fields error:', error);
+    res.status(500).json({ error: 'Failed to load custom fields.' });
+  }
+});
+
 adminHrRouter.get('/settings', requireAuth, requireRole('SUPER_ADMIN'), async (_req, res) => {
   try {
     const rows = await db.select().from(appSettings);
@@ -508,8 +641,16 @@ adminHrRouter.get('/settings', requireAuth, requireRole('SUPER_ADMIN'), async (_
 
 adminHrRouter.patch('/settings', requireAuth, requireRole('SUPER_ADMIN'), async (req: AuthRequest, res) => {
   try {
-    const { key, value } = req.body as { key: string; value: unknown };
+    const { key, value } = req.body as { key: string; value: any };
     if (!key) return res.status(400).json({ error: 'Setting key is required.' });
+
+    if (key === 'integrations' && value?.slackWebhookUrl) {
+      const safe = validateSafeWebhookUrl(String(value.slackWebhookUrl));
+      if (!safe) {
+        return res.status(400).json({ error: 'Webhook URL must be a valid public HTTPS endpoint.' });
+      }
+      value.slackWebhookUrl = safe;
+    }
 
     await db
       .insert(appSettings)

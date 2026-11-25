@@ -46,3 +46,13 @@ export function safeExternalUrl(url?: string | null): string | null {
     return null;
   }
 }
+
+export function formatCurrency(amount: number | null | undefined): string {
+  const num = Number(amount || 0);
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(Number.isFinite(num) ? num : 0);
+}
+

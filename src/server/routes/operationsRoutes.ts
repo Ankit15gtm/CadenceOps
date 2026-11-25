@@ -11,11 +11,20 @@ import {
   campaigns,
   companies,
   contacts,
+  dataFlags,
   dataRequests,
+  dncSuppression,
   followUps,
+  outreachTemplates,
+  prospectRemarks,
+  sequenceEnrollments,
+  sequences,
+  sequenceSteps,
   users,
 } from '../../db/schema.ts';
 import { AuthRequest, createNotification, logAudit, requireAuth, requireRole } from '../auth.ts';
+import { dispatchExternalAlert } from '../integrations.ts';
+import { normalizeEmail, normalizePhone } from '../normalization.ts';
 import { DEFAULT_OUTCOME_RULES, OutcomeRule, resolveStatusFromOutcome } from '../workflow.ts';
 
 export const operationsRouter = Router();
@@ -29,7 +38,7 @@ operationsRouter.get('/workspace/records', requireAuth, async (req: AuthRequest,
     const filterPreset = req.query.preset ? String(req.query.preset) : null;
     const search = String(req.query.search || '').trim().toLowerCase();
 
-    const [allCCRs, allCompanies, allContacts, allCampaigns, allUsers, allFollowUps, allActivities] = await Promise.all([
+    const [allCCRs, allCompanies, allContacts, allCampaigns, allUsers, allFollowUps, allActivities, allRemarks] = await Promise.all([
       db.select().from(campaignCompanyRecords).orderBy(desc(campaignCompanyRecords.updatedAt)),
       db.select().from(companies),
       db.select().from(contacts),
@@ -37,11 +46,19 @@ operationsRouter.get('/workspace/records', requireAuth, async (req: AuthRequest,
       db.select().from(users),
       db.select().from(followUps),
       db.select().from(activities).orderBy(desc(activities.createdAt)),
+      db.select().from(prospectRemarks).orderBy(desc(prospectRemarks.isPinned), desc(prospectRemarks.createdAt)),
     ]);
 
     const companyMap = new Map(allCompanies.map((c) => [c.id, c]));
     const campaignMap = new Map(allCampaigns.map((c) => [c.id, c]));
     const userMap = new Map(allUsers.map((u) => [u.id, u.fullName]));
+
+    const today = new Date().toISOString().slice(0, 10);
+    const duePendingRecordIds = new Set(
+      allFollowUps
+        .filter((f) => (f.status === 'PENDING' || f.status === 'OVERDUE') && f.followUpDate <= today)
+        .map((f) => f.campaignCompanyRecordId)
+    );
 
     const filtered = allCCRs.filter((r) => {
       // Strict Sales Rep isolation: Sales reps ONLY see records assigned to them
@@ -51,6 +68,7 @@ operationsRouter.get('/workspace/records', requireAuth, async (req: AuthRequest,
 
       if (filterPreset === 'NOT_YET_WORKED' && r.status !== 'NOT_YET_WORKED') return false;
       if (filterPreset === 'WORKED' && r.status === 'NOT_YET_WORKED') return false;
+      if (filterPreset === 'DUE_TODAY' && !duePendingRecordIds.has(r.id) && r.dueDate !== today) return false;
       if (filterPreset === 'INTERESTED' && !['INTERESTED', 'QUALIFIED_LEAD'].includes(r.status)) return false;
       if (filterPreset === 'NOT_INTERESTED' && !['NOT_INTERESTED', 'NOT_QUALIFIED', 'DO_NOT_CONTACT'].includes(r.status)) return false;
       if (filterPreset === 'FOLLOW_UP' && r.status !== 'FOLLOW_UP_REQUIRED') return false;
@@ -60,7 +78,11 @@ operationsRouter.get('/workspace/records', requireAuth, async (req: AuthRequest,
         const comp = companyMap.get(r.companyId);
         const compContacts = allContacts.filter((ct) => ct.companyId === r.companyId);
         const contactStr = compContacts.map((ct) => `${ct.fullName} ${ct.workEmail || ''} ${ct.jobTitle || ''}`).join(' ');
-        const hay = `${comp?.name || ''} ${comp?.domain || ''} ${contactStr} ${campaignMap.get(r.campaignId)?.name || ''}`.toLowerCase();
+        const remarkStr = allRemarks
+          .filter((rm) => rm.campaignCompanyRecordId === r.id)
+          .map((rm) => rm.content)
+          .join(' ');
+        const hay = `${comp?.name || ''} ${comp?.domain || ''} ${contactStr} ${campaignMap.get(r.campaignId)?.name || ''} ${r.prospectSummary || ''} ${remarkStr}`.toLowerCase();
         if (!hay.includes(search)) return false;
       }
       return true;
@@ -74,6 +96,8 @@ operationsRouter.get('/workspace/records', requireAuth, async (req: AuthRequest,
         .filter((f) => f.campaignCompanyRecordId === r.id && (f.status === 'PENDING' || f.status === 'OVERDUE'))
         .sort((a, b) => a.followUpDate.localeCompare(b.followUpDate))[0];
       const latestAct = allActivities.find((a) => a.campaignCompanyRecordId === r.id);
+      const recRemarks = allRemarks.filter((rm) => rm.campaignCompanyRecordId === r.id);
+      const highlightRemark = recRemarks[0] || null;
 
       return {
         id: r.id,
@@ -104,6 +128,19 @@ operationsRouter.get('/workspace/records', requireAuth, async (req: AuthRequest,
         assignedAt: r.assignedAt,
         dueDate: r.dueDate,
         status: r.status,
+        prospectSummary: r.prospectSummary || null,
+        prospectSentiment: r.prospectSentiment || null,
+        remarksCount: recRemarks.length,
+        latestRemark: highlightRemark
+          ? {
+              id: highlightRemark.id,
+              category: highlightRemark.category,
+              content: highlightRemark.content,
+              isPinned: highlightRemark.isPinned,
+              authorName: userMap.get(highlightRemark.authorId) || 'Rep',
+              createdAt: highlightRemark.createdAt,
+            }
+          : null,
         lastActivityAt: r.lastActivityAt,
         lastActivitySummary: latestAct ? `${latestAct.channel} · ${latestAct.activityDate}` : null,
         nextFollowUp: pendingFup ? `${pendingFup.followUpDate} ${pendingFup.followUpTime}` : null,
@@ -133,42 +170,84 @@ operationsRouter.get('/workspace/records/:recordId', requireAuth, async (req: Au
       return res.status(403).json({ error: 'Forbidden: This record is not assigned to you.' });
     }
 
-    const [[company], [campaign], companyContacts, recordActivities, recordFollowUps, recordAppointments, assignHist, allUsers] =
-      await Promise.all([
-        db.select().from(companies).where(eq(companies.id, ccr.companyId)).limit(1),
-        db.select().from(campaigns).where(eq(campaigns.id, ccr.campaignId)).limit(1),
-        db.select().from(contacts).where(eq(contacts.companyId, ccr.companyId)),
-        db
-          .select()
-          .from(activities)
-          .where(eq(activities.campaignCompanyRecordId, ccr.id))
-          .orderBy(desc(activities.activityDate), desc(activities.activityTime), desc(activities.createdAt)),
-        db
-          .select()
-          .from(followUps)
-          .where(eq(followUps.campaignCompanyRecordId, ccr.id))
-          .orderBy(desc(followUps.followUpDate)),
-        db
-          .select()
-          .from(appointments)
-          .where(eq(appointments.campaignCompanyRecordId, ccr.id))
-          .orderBy(desc(appointments.appointmentDate)),
-        db
-          .select()
-          .from(assignmentHistory)
-          .where(eq(assignmentHistory.campaignCompanyRecordId, ccr.id))
-          .orderBy(desc(assignmentHistory.createdAt)),
-        db.select().from(users),
-      ]);
+    const [
+      [company],
+      [campaign],
+      companyContacts,
+      recordActivities,
+      recordFollowUps,
+      recordAppointments,
+      assignHist,
+      allUsers,
+      allTemplates,
+      allSeqs,
+      allSteps,
+      enrollments,
+      companyFlags,
+      recordRemarks,
+    ] = await Promise.all([
+      db.select().from(companies).where(eq(companies.id, ccr.companyId)).limit(1),
+      db.select().from(campaigns).where(eq(campaigns.id, ccr.campaignId)).limit(1),
+      db.select().from(contacts).where(eq(contacts.companyId, ccr.companyId)),
+      db
+        .select()
+        .from(activities)
+        .where(eq(activities.campaignCompanyRecordId, ccr.id))
+        .orderBy(desc(activities.activityDate), desc(activities.activityTime), desc(activities.createdAt)),
+      db
+        .select()
+        .from(followUps)
+        .where(eq(followUps.campaignCompanyRecordId, ccr.id))
+        .orderBy(desc(followUps.followUpDate)),
+      db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.campaignCompanyRecordId, ccr.id))
+        .orderBy(desc(appointments.appointmentDate)),
+      db
+        .select()
+        .from(assignmentHistory)
+        .where(eq(assignmentHistory.campaignCompanyRecordId, ccr.id))
+        .orderBy(desc(assignmentHistory.createdAt)),
+      db.select().from(users),
+      db.select().from(outreachTemplates),
+      db.select().from(sequences),
+      db.select().from(sequenceSteps).orderBy(sequenceSteps.stepOrder),
+      db.select().from(sequenceEnrollments).where(eq(sequenceEnrollments.campaignCompanyRecordId, ccr.id)),
+      db.select().from(dataFlags).where(eq(dataFlags.companyId, ccr.companyId)).orderBy(desc(dataFlags.createdAt)),
+      db
+        .select()
+        .from(prospectRemarks)
+        .where(eq(prospectRemarks.campaignCompanyRecordId, ccr.id))
+        .orderBy(desc(prospectRemarks.isPinned), desc(prospectRemarks.createdAt)),
+    ]);
 
+    const userObjMap = new Map(allUsers.map((u) => [u.id, u]));
     const userMap = new Map(allUsers.map((u) => [u.id, u.fullName]));
     const contactMap = new Map(companyContacts.map((c) => [c.id, c.fullName]));
+    const seqMap = new Map(allSeqs.map((s) => [s.id, s]));
 
     res.json({
       record: ccr,
       company,
       campaign,
-      contacts: companyContacts,
+      contacts: companyContacts.filter((ct) => !ct.isArchived),
+      templates: allTemplates.filter((t) => t.isActive && (!t.campaignId || t.campaignId === ccr.campaignId)),
+      availableSequences: allSeqs
+        .filter((s) => s.isActive && (!s.campaignId || s.campaignId === ccr.campaignId))
+        .map((s) => ({ ...s, steps: allSteps.filter((st) => st.sequenceId === s.id) })),
+      sequenceEnrollments: enrollments.map((e) => ({
+        ...e,
+        sequenceName: seqMap.get(e.sequenceId)?.name || 'Sequence',
+        steps: allSteps.filter((st) => st.sequenceId === e.sequenceId),
+      })),
+      dataFlags: companyFlags,
+      remarks: recordRemarks.map((rm) => ({
+        ...rm,
+        authorName: userObjMap.get(rm.authorId)?.fullName || 'Team Member',
+        authorRole: userObjMap.get(rm.authorId)?.role || 'SALES_REP',
+        contactName: rm.contactId ? contactMap.get(rm.contactId) || null : null,
+      })),
       activities: recordActivities.map((a) => ({
         ...a,
         contactName: a.contactId ? contactMap.get(a.contactId) || null : null,
@@ -190,6 +269,272 @@ operationsRouter.get('/workspace/records/:recordId', requireAuth, async (req: Au
   } catch (error) {
     console.error('Workspace detail error:', error);
     res.status(500).json({ error: 'Failed to load prospect record workspace.' });
+  }
+});
+
+// ==================== PROSPECT REMARKS & ACCOUNT BRIEF ====================
+const REMARK_CATEGORIES = new Set([
+  'GENERAL',
+  'PAIN_POINT',
+  'BUDGET_TIMELINE',
+  'DECISION_MAKER',
+  'COMPETITOR_STACK',
+  'OBJECTION',
+  'NEXT_STEP',
+  'HANDOVER',
+]);
+const SENTIMENT_VALUES = new Set(['HOT', 'WARM', 'NEUTRAL', 'COOL', 'BLOCKER']);
+
+operationsRouter.patch('/workspace/records/:recordId/summary', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const recordId = Number(req.params.recordId);
+    const user = req.currentUser!;
+    const [ccr] = await db
+      .select()
+      .from(campaignCompanyRecords)
+      .where(eq(campaignCompanyRecords.id, recordId))
+      .limit(1);
+    if (!ccr) return res.status(404).json({ error: 'Prospect record not found.' });
+    if (user.role === 'SALES_REP' && ccr.assignedToId !== user.id) {
+      return res.status(403).json({ error: 'Forbidden: This record is not assigned to you.' });
+    }
+
+    const { prospectSummary, prospectSentiment } = req.body as {
+      prospectSummary?: string | null;
+      prospectSentiment?: string | null;
+    };
+
+    const cleanSummary = prospectSummary !== undefined ? (String(prospectSummary || '').trim() || null) : ccr.prospectSummary;
+    const cleanSentiment =
+      prospectSentiment !== undefined
+        ? prospectSentiment && SENTIMENT_VALUES.has(String(prospectSentiment).toUpperCase())
+          ? String(prospectSentiment).toUpperCase()
+          : null
+        : ccr.prospectSentiment;
+
+    const [updated] = await db
+      .update(campaignCompanyRecords)
+      .set({
+        prospectSummary: cleanSummary,
+        prospectSentiment: cleanSentiment,
+        updatedAt: new Date(),
+      })
+      .where(eq(campaignCompanyRecords.id, recordId))
+      .returning();
+
+    await logAudit({
+      user,
+      action: 'PROSPECT_SUMMARY_UPDATED',
+      entity: 'campaign_company_record',
+      entityId: recordId,
+      previousValue: { prospectSummary: ccr.prospectSummary, prospectSentiment: ccr.prospectSentiment },
+      newValue: { prospectSummary: cleanSummary, prospectSentiment: cleanSentiment },
+    });
+
+    res.json({ record: updated });
+  } catch (error) {
+    console.error('Update prospect summary error:', error);
+    res.status(500).json({ error: 'Failed to save prospect summary.' });
+  }
+});
+
+operationsRouter.post('/workspace/records/:recordId/remarks', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const recordId = Number(req.params.recordId);
+    const user = req.currentUser!;
+    const [ccr] = await db
+      .select()
+      .from(campaignCompanyRecords)
+      .where(eq(campaignCompanyRecords.id, recordId))
+      .limit(1);
+    if (!ccr) return res.status(404).json({ error: 'Prospect record not found.' });
+    if (user.role === 'SALES_REP' && ccr.assignedToId !== user.id) {
+      return res.status(403).json({ error: 'Forbidden: This record is not assigned to you.' });
+    }
+
+    const { category, contactId, content, isPinned } = req.body as {
+      category?: string;
+      contactId?: number | string | null;
+      content?: string;
+      isPinned?: boolean;
+    };
+
+    const cleanContent = String(content || '').trim();
+    if (!cleanContent) {
+      return res.status(400).json({ error: 'Remark text cannot be empty.' });
+    }
+
+    const cleanCategory = REMARK_CATEGORIES.has(String(category || '').toUpperCase())
+      ? String(category).toUpperCase()
+      : 'GENERAL';
+
+    const cleanContactId = contactId ? Number(contactId) : null;
+
+    const [created] = await db
+      .insert(prospectRemarks)
+      .values({
+        campaignId: ccr.campaignId,
+        campaignCompanyRecordId: ccr.id,
+        companyId: ccr.companyId,
+        contactId: cleanContactId,
+        authorId: user.id,
+        category: cleanCategory,
+        content: cleanContent,
+        isPinned: Boolean(isPinned),
+      })
+      .returning();
+
+    await db
+      .update(campaignCompanyRecords)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaignCompanyRecords.id, ccr.id));
+
+    const [[comp], [cmp], linkedContact] = await Promise.all([
+      db.select().from(companies).where(eq(companies.id, ccr.companyId)).limit(1),
+      db.select().from(campaigns).where(eq(campaigns.id, ccr.campaignId)).limit(1),
+      cleanContactId ? db.select().from(contacts).where(eq(contacts.id, cleanContactId)).limit(1) : Promise.resolve([]),
+    ]);
+
+    if (user.role !== 'SALES_REP' && ccr.assignedToId && ccr.assignedToId !== user.id) {
+      await createNotification({
+        userId: ccr.assignedToId,
+        type: 'PROSPECT_REMARK',
+        title: `New Manager Note on ${comp?.name || 'Prospect'}`,
+        message: `${user.fullName}: ${cleanContent.slice(0, 120)}`,
+        entityType: 'campaign_company_record',
+        entityId: ccr.id,
+        linkPath: '/workspace',
+      });
+    } else if (cleanCategory === 'HANDOVER' && cmp?.campaignManagerId && cmp.campaignManagerId !== user.id) {
+      await createNotification({
+        userId: cmp.campaignManagerId,
+        type: 'PROSPECT_HANDOVER_REMARK',
+        title: `Rep Handover Note on ${comp?.name || 'Prospect'}`,
+        message: `${user.fullName}: ${cleanContent.slice(0, 120)}`,
+        entityType: 'campaign_company_record',
+        entityId: ccr.id,
+        linkPath: `/campaigns/${cmp.id}`,
+      });
+    }
+
+    await logAudit({
+      user,
+      action: 'PROSPECT_REMARK_ADDED',
+      entity: 'prospect_remark',
+      entityId: created.id,
+      newValue: { company: comp?.name, category: cleanCategory, isPinned: created.isPinned },
+    });
+
+    res.status(201).json({
+      remark: {
+        ...created,
+        authorName: user.fullName,
+        authorRole: user.role,
+        contactName: linkedContact[0]?.fullName || null,
+      },
+    });
+  } catch (error) {
+    console.error('Create prospect remark error:', error);
+    res.status(500).json({ error: 'Failed to save prospect remark.' });
+  }
+});
+
+operationsRouter.patch('/remarks/:remarkId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const remarkId = Number(req.params.remarkId);
+    const user = req.currentUser!;
+    const [existing] = await db.select().from(prospectRemarks).where(eq(prospectRemarks.id, remarkId)).limit(1);
+    if (!existing) return res.status(404).json({ error: 'Remark not found.' });
+
+    const isManager = ['SUPER_ADMIN', 'CAMPAIGN_MANAGER', 'DATA_MANAGER'].includes(user.role);
+    if (!isManager && existing.authorId !== user.id) {
+      return res.status(403).json({ error: 'You can only edit your own remarks.' });
+    }
+
+    const { content, category, isPinned, contactId } = req.body as {
+      content?: string;
+      category?: string;
+      isPinned?: boolean;
+      contactId?: number | string | null;
+    };
+
+    const nextContent = content !== undefined ? String(content).trim() : existing.content;
+    if (!nextContent) {
+      return res.status(400).json({ error: 'Remark text cannot be empty.' });
+    }
+    const nextCategory =
+      category !== undefined && REMARK_CATEGORIES.has(String(category).toUpperCase())
+        ? String(category).toUpperCase()
+        : existing.category;
+    const nextPinned = isPinned !== undefined ? Boolean(isPinned) : existing.isPinned;
+    const nextContactId = contactId !== undefined ? (contactId ? Number(contactId) : null) : existing.contactId;
+
+    const [updated] = await db
+      .update(prospectRemarks)
+      .set({
+        content: nextContent,
+        category: nextCategory,
+        isPinned: nextPinned,
+        contactId: nextContactId,
+        updatedAt: new Date(),
+      })
+      .where(eq(prospectRemarks.id, remarkId))
+      .returning();
+
+    const [[author], linkedContact] = await Promise.all([
+      db.select().from(users).where(eq(users.id, updated.authorId)).limit(1),
+      updated.contactId ? db.select().from(contacts).where(eq(contacts.id, updated.contactId)).limit(1) : Promise.resolve([]),
+    ]);
+
+    await logAudit({
+      user,
+      action: 'PROSPECT_REMARK_UPDATED',
+      entity: 'prospect_remark',
+      entityId: remarkId,
+      previousValue: { content: existing.content, category: existing.category, isPinned: existing.isPinned },
+      newValue: { content: updated.content, category: updated.category, isPinned: updated.isPinned },
+    });
+
+    res.json({
+      remark: {
+        ...updated,
+        authorName: author?.fullName || 'Team Member',
+        authorRole: author?.role || 'SALES_REP',
+        contactName: linkedContact[0]?.fullName || null,
+      },
+    });
+  } catch (error) {
+    console.error('Update remark error:', error);
+    res.status(500).json({ error: 'Failed to update remark.' });
+  }
+});
+
+operationsRouter.delete('/remarks/:remarkId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const remarkId = Number(req.params.remarkId);
+    const user = req.currentUser!;
+    const [existing] = await db.select().from(prospectRemarks).where(eq(prospectRemarks.id, remarkId)).limit(1);
+    if (!existing) return res.status(404).json({ error: 'Remark not found.' });
+
+    const isManager = ['SUPER_ADMIN', 'CAMPAIGN_MANAGER', 'DATA_MANAGER'].includes(user.role);
+    if (!isManager && existing.authorId !== user.id) {
+      return res.status(403).json({ error: 'You can only delete your own remarks.' });
+    }
+
+    await db.delete(prospectRemarks).where(eq(prospectRemarks.id, remarkId));
+
+    await logAudit({
+      user,
+      action: 'PROSPECT_REMARK_DELETED',
+      entity: 'prospect_remark',
+      entityId: remarkId,
+      previousValue: { category: existing.category, content: existing.content.slice(0, 120) },
+    });
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Delete remark error:', error);
+    res.status(500).json({ error: 'Failed to delete remark.' });
   }
 });
 
@@ -253,6 +598,11 @@ operationsRouter.post('/activities', requireAuth, async (req: AuthRequest, res) 
       followUpDate,
       followUpTime,
       followUpType,
+      durationSeconds,
+      emailSubject,
+      externalMessageId,
+      recordingUrl,
+      addToGlobalDnc,
     } = req.body as Record<string, any>;
 
     if (!campaignCompanyRecordId || !channel || !outcome) {
@@ -294,6 +644,10 @@ operationsRouter.post('/activities', requireAuth, async (req: AuthRequest, res) 
         notes: notes || null,
         followUpDate: followUpDate || null,
         resultingStatus,
+        durationSeconds: durationSeconds !== undefined && durationSeconds !== '' ? Number(durationSeconds) : null,
+        emailSubject: emailSubject || null,
+        externalMessageId: externalMessageId || null,
+        recordingUrl: recordingUrl || null,
       })
       .returning();
 
@@ -320,6 +674,40 @@ operationsRouter.post('/activities', requireAuth, async (req: AuthRequest, res) 
           updatedAt: new Date(),
         })
         .where(and(eq(campaignContactRecords.campaignId, ccr.campaignId), eq(campaignContactRecords.contactId, Number(contactId))));
+    }
+
+    // Global DNC enforcement if DO_NOT_CONTACT
+    if (resultingStatus === 'DO_NOT_CONTACT' || outcome === 'DO_NOT_CONTACT' || addToGlobalDnc) {
+      if (contactId) {
+        const [ct] = await db.select().from(contacts).where(eq(contacts.id, Number(contactId))).limit(1);
+        if (ct) {
+          await db.update(contacts).set({ doNotContact: true, updatedAt: new Date() }).where(eq(contacts.id, ct.id));
+          const normEm = normalizeEmail(ct.workEmail);
+          const normPh = normalizePhone(ct.phone);
+          if (normEm) {
+            await db
+              .insert(dncSuppression)
+              .values({ type: 'EMAIL', value: normEm, rawValue: ct.workEmail!, reason: 'Marked DNC during outreach', addedById: user.id })
+              .onConflictDoNothing();
+          }
+          if (normPh) {
+            await db
+              .insert(dncSuppression)
+              .values({ type: 'PHONE', value: normPh, rawValue: ct.phone!, reason: 'Marked DNC during outreach', addedById: user.id })
+              .onConflictDoNothing();
+          }
+        }
+      }
+    }
+
+    // Auto-stop active sequence enrollments on positive reply or appointment
+    const positiveOutcomes = new Set(['INTERESTED', 'QUALIFIED_LEAD', 'APPOINTMENT_BOOKED', 'REQUESTED_INFO', 'CONNECTED_CONVERSATION']);
+    if (positiveOutcomes.has(String(outcome)) || ['INTERESTED', 'APPOINTMENT_BOOKED', 'DO_NOT_CONTACT', 'NOT_INTERESTED'].includes(resultingStatus)) {
+      const stopStatus = resultingStatus === 'APPOINTMENT_BOOKED' ? 'STOPPED_APPOINTMENT' : 'STOPPED_REPLY';
+      await db
+        .update(sequenceEnrollments)
+        .set({ status: stopStatus, updatedAt: new Date() })
+        .where(and(eq(sequenceEnrollments.campaignCompanyRecordId, ccr.id), eq(sequenceEnrollments.status, 'ACTIVE')));
     }
 
     let createdFollowUp = null;
@@ -493,6 +881,71 @@ operationsRouter.patch('/follow-ups/:id', requireAuth, async (req: AuthRequest, 
   }
 });
 
+operationsRouter.post('/follow-ups/bulk', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const user = req.currentUser!;
+    const { ids, action, followUpDate, followUpTime, assignedToId } = req.body as {
+      ids?: number[];
+      action?: 'COMPLETE' | 'RESCHEDULE' | 'REASSIGN';
+      followUpDate?: string;
+      followUpTime?: string;
+      assignedToId?: number;
+    };
+
+    if (!Array.isArray(ids) || ids.length === 0 || !action) {
+      return res.status(400).json({ error: 'Select at least one follow-up and action.' });
+    }
+
+    const isManager = ['SUPER_ADMIN', 'CAMPAIGN_MANAGER', 'DATA_MANAGER'].includes(user.role);
+    if (action === 'REASSIGN' && !isManager) {
+      return res.status(403).json({ error: 'Only managers can reassign follow-up tasks.' });
+    }
+    if (action === 'RESCHEDULE' && !followUpDate) {
+      return res.status(400).json({ error: 'Select a target reschedule date.' });
+    }
+    if (action === 'REASSIGN' && !assignedToId) {
+      return res.status(400).json({ error: 'Select a representative to reassign to.' });
+    }
+
+    const allRows = await db.select().from(followUps);
+    const idSet = new Set(ids.map(Number));
+    const targetRows = allRows.filter((f) => idSet.has(f.id) && (isManager || f.assignedToId === user.id));
+
+    let updatedCount = 0;
+    for (const fup of targetRows) {
+      if (action === 'COMPLETE') {
+        await db
+          .update(followUps)
+          .set({ status: 'COMPLETED', completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(followUps.id, fup.id));
+        updatedCount++;
+      } else if (action === 'RESCHEDULE') {
+        await db
+          .update(followUps)
+          .set({
+            status: 'PENDING',
+            followUpDate: String(followUpDate),
+            followUpTime: followUpTime || fup.followUpTime,
+            updatedAt: new Date(),
+          })
+          .where(eq(followUps.id, fup.id));
+        updatedCount++;
+      } else if (action === 'REASSIGN') {
+        await db
+          .update(followUps)
+          .set({ assignedToId: Number(assignedToId), updatedAt: new Date() })
+          .where(eq(followUps.id, fup.id));
+        updatedCount++;
+      }
+    }
+
+    res.json({ ok: true, updatedCount });
+  } catch (error) {
+    console.error('Bulk follow-up error:', error);
+    res.status(500).json({ error: 'Failed to process bulk follow-up action.' });
+  }
+});
+
 // ==================== APPOINTMENTS ====================
 operationsRouter.get('/appointments', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -573,6 +1026,8 @@ operationsRouter.post('/appointments', requireAuth, async (req: AuthRequest, res
         requirements: body.requirements || null,
         status: body.status || 'SCHEDULED',
         confirmationStatus: body.confirmationStatus || 'PENDING',
+        googleEventId: body.googleEventId || null,
+        calendarSynced: Boolean(body.googleEventId || body.calendarSynced),
       })
       .returning();
 
@@ -585,6 +1040,11 @@ operationsRouter.post('/appointments', requireAuth, async (req: AuthRequest, res
         updatedAt: new Date(),
       })
       .where(eq(campaignCompanyRecords.id, ccr.id));
+
+    await db
+      .update(sequenceEnrollments)
+      .set({ status: 'STOPPED_APPOINTMENT', updatedAt: new Date() })
+      .where(and(eq(sequenceEnrollments.campaignCompanyRecordId, ccr.id), eq(sequenceEnrollments.status, 'ACTIVE')));
 
     await db.insert(activities).values({
       campaignId: ccr.campaignId,
@@ -615,6 +1075,12 @@ operationsRouter.post('/appointments', requireAuth, async (req: AuthRequest, res
         linkPath: '/appointments',
       });
     }
+
+    await dispatchExternalAlert({
+      event: 'APPOINTMENT_BOOKED',
+      title: `Appointment Booked by ${user.fullName}`,
+      message: `${created.prospectName} (${created.meetingType}) on ${created.appointmentDate} at ${created.appointmentTime} ${created.timezone}`,
+    });
 
     await logAudit({
       user,
@@ -651,6 +1117,8 @@ operationsRouter.patch('/appointments/:id', requireAuth, async (req: AuthRequest
         appointmentTime: body.appointmentTime || existing.appointmentTime,
         meetingLink: body.meetingLink !== undefined ? body.meetingLink : existing.meetingLink,
         notes: body.notes !== undefined ? body.notes : existing.notes,
+        googleEventId: body.googleEventId !== undefined ? body.googleEventId : existing.googleEventId,
+        calendarSynced: body.calendarSynced !== undefined ? Boolean(body.calendarSynced) : existing.calendarSynced,
         updatedAt: new Date(),
       })
       .where(eq(appointments.id, id))

@@ -7,6 +7,7 @@ import { dashboardRouter } from './src/server/routes/dashboardRoutes.ts';
 import { dataRouter } from './src/server/routes/dataRoutes.ts';
 import { operationsRouter } from './src/server/routes/operationsRoutes.ts';
 import { adminHrRouter } from './src/server/routes/adminHrRoutes.ts';
+import { enterpriseRouter } from './src/server/routes/enterpriseRoutes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +29,7 @@ async function startServer() {
   app.use('/api', dataRouter);
   app.use('/api', operationsRouter);
   app.use('/api', adminHrRouter);
+  app.use('/api', enterpriseRouter);
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

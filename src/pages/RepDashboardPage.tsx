@@ -30,6 +30,19 @@ interface RepDashboardData {
     dailyActivitiesCount: number;
     weeklyActivitiesCount: number;
   };
+  targets?: {
+    dailyCallTarget: number;
+    dailyOutreachTarget: number;
+    todayCalls: number;
+    todayOutreach: number;
+  };
+  leaderboard?: Array<{
+    id: number;
+    fullName: string;
+    todayOutreach: number;
+    totalOutreach: number;
+    appointmentsBooked: number;
+  }>;
   myCampaigns: Array<{
     id: number;
     campaignCode: string;
@@ -92,6 +105,43 @@ export function RepDashboardPage({ onNavigate }: { onNavigate: (route: NavRoute)
         </Button>
       </div>
 
+      {data.targets && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card>
+            <CardContent className="p-4 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-slate-600 dark:text-slate-300">Daily Phone Call Quota</span>
+                <span className="font-mono tabular-nums font-semibold">
+                  {data.targets.todayCalls} / {data.targets.dailyCallTarget}
+                </span>
+              </div>
+              <div className="h-2 rounded bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full bg-blue-700"
+                  style={{ width: `${Math.min(100, Math.round((data.targets.todayCalls / Math.max(1, data.targets.dailyCallTarget)) * 100))}%` }}
+                />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-slate-600 dark:text-slate-300">Daily Total Outreach Quota</span>
+                <span className="font-mono tabular-nums font-semibold">
+                  {data.targets.todayOutreach} / {data.targets.dailyOutreachTarget}
+                </span>
+              </div>
+              <div className="h-2 rounded bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full bg-emerald-600"
+                  style={{ width: `${Math.min(100, Math.round((data.targets.todayOutreach / Math.max(1, data.targets.dailyOutreachTarget)) * 100))}%` }}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {kpis.map((k) => (
           <Card key={k.label}>
@@ -150,6 +200,36 @@ export function RepDashboardPage({ onNavigate }: { onNavigate: (route: NavRoute)
           </CardContent>
         </Card>
       </div>
+
+      {data.leaderboard && data.leaderboard.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Team Sales Leaderboard</CardTitle></CardHeader>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500">
+                <tr>
+                  <th className="py-2.5 px-4 font-medium">Rank</th>
+                  <th className="py-2.5 px-4 font-medium">Representative</th>
+                  <th className="py-2.5 px-4 font-medium text-right">Today Outreach</th>
+                  <th className="py-2.5 px-4 font-medium text-right">Total Outreach</th>
+                  <th className="py-2.5 px-4 font-medium text-right">Appointments Booked</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {data.leaderboard.map((row, idx) => (
+                  <tr key={row.id}>
+                    <td className="py-2.5 px-4 font-mono text-xs">#{idx + 1}</td>
+                    <td className="py-2.5 px-4 font-medium">{row.fullName}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{row.todayOutreach}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums">{row.totalOutreach}</td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums font-semibold text-emerald-700">{row.appointmentsBooked}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

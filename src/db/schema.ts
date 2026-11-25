@@ -30,6 +30,8 @@ export const users = pgTable('users', {
   reportingManagerId: integer('reporting_manager_id'),
   isActive: boolean('is_active').default(true).notNull(),
   avatarUrl: text('avatar_url'),
+  dailyCallTarget: integer('daily_call_target').default(35).notNull(),
+  dailyOutreachTarget: integer('daily_outreach_target').default(60).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -122,6 +124,9 @@ export const companies = pgTable(
     fitScore: integer('fit_score').default(0).notNull(),
     dataSource: text('data_source').default('Manual').notNull(),
     validationStatus: text('validation_status').default('VALID').notNull(), // VALID | MISSING_INFO | INVALID
+    timezone: text('timezone'),
+    isArchived: boolean('is_archived').default(false).notNull(),
+    customFields: jsonb('custom_fields').$type<Record<string, string>>().default({}),
     createdById: integer('created_by_id').references(() => users.id),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -154,6 +159,8 @@ export const contacts = pgTable(
     aiScore: integer('ai_score').default(0).notNull(),
     fitScore: integer('fit_score').default(0).notNull(),
     validationStatus: text('validation_status').default('VALID').notNull(),
+    doNotContact: boolean('do_not_contact').default(false).notNull(),
+    isArchived: boolean('is_archived').default(false).notNull(),
     createdById: integer('created_by_id').references(() => users.id),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -222,6 +229,8 @@ export const campaignCompanyRecords = pgTable(
     lastOutcome: text('last_outcome'),
     nextFollowUpAt: timestamp('next_follow_up_at'),
     workedCount: integer('worked_count').default(0).notNull(),
+    prospectSummary: text('prospect_summary'),
+    prospectSentiment: text('prospect_sentiment'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -326,6 +335,10 @@ export const activities = pgTable('activities', {
   notes: text('notes'),
   followUpDate: text('follow_up_date'),
   resultingStatus: text('resulting_status').notNull(),
+  durationSeconds: integer('duration_seconds'),
+  emailSubject: text('email_subject'),
+  externalMessageId: text('external_message_id'),
+  recordingUrl: text('recording_url'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -386,6 +399,8 @@ export const appointments = pgTable('appointments', {
   requirements: text('requirements'),
   status: text('status').notNull().default('SCHEDULED'), // SCHEDULED | CONFIRMED | PENDING_CONFIRMATION | RESCHEDULED | COMPLETED | NO_SHOW | CANCELLED
   confirmationStatus: text('confirmation_status').notNull().default('PENDING'),
+  googleEventId: text('google_event_id'),
+  calendarSynced: boolean('calendar_synced').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -456,3 +471,180 @@ export const leaveRequests = pgTable('leave_requests', {
   reviewedById: integer('reviewed_by_id').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// 21. Global DNC Suppression List
+export const dncSuppression = pgTable(
+  'dnc_suppression',
+  {
+    id: serial('id').primaryKey(),
+    type: text('type').notNull(), // DOMAIN | EMAIL | PHONE
+    value: text('value').notNull(),
+    rawValue: text('raw_value').notNull(),
+    reason: text('reason'),
+    addedById: integer('added_by_id').references(() => users.id),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('dnc_type_value_idx').on(table.type, table.value)]
+);
+
+// 22. Outreach Templates & Call Scripts
+export const outreachTemplates = pgTable('outreach_templates', {
+  id: serial('id').primaryKey(),
+  campaignId: integer('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  channel: text('channel').notNull(), // EMAIL | LINKEDIN_MESSAGE | WHATSAPP | CALL_SCRIPT
+  subject: text('subject'),
+  body: text('body').notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdById: integer('created_by_id').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// 23. Automated Multi-Touch Sequences
+export const sequences = pgTable('sequences', {
+  id: serial('id').primaryKey(),
+  campaignId: integer('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  stopOnReply: boolean('stop_on_reply').default(true).notNull(),
+  stopOnAppointment: boolean('stop_on_appointment').default(true).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdById: integer('created_by_id').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 24. Sequence Steps
+export const sequenceSteps = pgTable('sequence_steps', {
+  id: serial('id').primaryKey(),
+  sequenceId: integer('sequence_id')
+    .references(() => sequences.id, { onDelete: 'cascade' })
+    .notNull(),
+  stepOrder: integer('step_order').notNull(),
+  delayDays: integer('delay_days').default(2).notNull(),
+  channel: text('channel').notNull(), // PHONE_CALL | EMAIL | LINKEDIN_CONNECTION | LINKEDIN_MESSAGE | WHATSAPP
+  templateId: integer('template_id').references(() => outreachTemplates.id, { onDelete: 'set null' }),
+  instructions: text('instructions'),
+});
+
+// 25. Sequence Enrollments
+export const sequenceEnrollments = pgTable(
+  'sequence_enrollments',
+  {
+    id: serial('id').primaryKey(),
+    sequenceId: integer('sequence_id')
+      .references(() => sequences.id, { onDelete: 'cascade' })
+      .notNull(),
+    campaignCompanyRecordId: integer('campaign_company_record_id')
+      .references(() => campaignCompanyRecords.id, { onDelete: 'cascade' })
+      .notNull(),
+    contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+    enrolledById: integer('enrolled_by_id').references(() => users.id),
+    currentStepOrder: integer('current_step_order').default(1).notNull(),
+    nextDueDate: text('next_due_date').notNull(),
+    status: text('status').default('ACTIVE').notNull(), // ACTIVE | PAUSED | COMPLETED | STOPPED_REPLY | STOPPED_APPOINTMENT
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('seq_enrollment_unique_idx').on(table.sequenceId, table.campaignCompanyRecordId)]
+);
+
+// 26. Rep Data Correction / Enrichment Flags
+export const dataFlags = pgTable('data_flags', {
+  id: serial('id').primaryKey(),
+  campaignCompanyRecordId: integer('campaign_company_record_id').references(() => campaignCompanyRecords.id, {
+    onDelete: 'cascade',
+  }),
+  companyId: integer('company_id')
+    .references(() => companies.id, { onDelete: 'cascade' })
+    .notNull(),
+  contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+  reportedById: integer('reported_by_id')
+    .references(() => users.id)
+    .notNull(),
+  issueType: text('issue_type').notNull(), // WRONG_NUMBER | BOUNCED_EMAIL | OUTDATED_TITLE | DUPLICATE | MISSING_DECISION_MAKER | OTHER
+  proposedFix: text('proposed_fix'),
+  notes: text('notes'),
+  status: text('status').default('OPEN').notNull(), // OPEN | RESOLVED | DISMISSED
+  resolvedById: integer('resolved_by_id').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// 27. Saved Filter Views
+export const savedViews = pgTable('saved_views', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .notNull(),
+  page: text('page').notNull(),
+  name: text('name').notNull(),
+  filters: jsonb('filters').$type<Record<string, string>>().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 28. Prospect Remarks & Account Intelligence Notes
+export const prospectRemarks = pgTable(
+  'prospect_remarks',
+  {
+    id: serial('id').primaryKey(),
+    campaignId: integer('campaign_id')
+      .references(() => campaigns.id, { onDelete: 'cascade' })
+      .notNull(),
+    campaignCompanyRecordId: integer('campaign_company_record_id')
+      .references(() => campaignCompanyRecords.id, { onDelete: 'cascade' })
+      .notNull(),
+    companyId: integer('company_id')
+      .references(() => companies.id, { onDelete: 'cascade' })
+      .notNull(),
+    contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+    authorId: integer('author_id')
+      .references(() => users.id)
+      .notNull(),
+    category: text('category').default('GENERAL').notNull(), // GENERAL | PAIN_POINT | BUDGET_TIMELINE | DECISION_MAKER | COMPETITOR_STACK | OBJECTION | NEXT_STEP | HANDOVER
+    content: text('content').notNull(),
+    isPinned: boolean('is_pinned').default(false).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('prospect_remarks_ccr_idx').on(table.campaignCompanyRecordId),
+    index('prospect_remarks_company_idx').on(table.companyId),
+  ]
+);
+
+// 29. Opportunity / Deal Pipeline
+export const deals = pgTable(
+  'deals',
+  {
+    id: serial('id').primaryKey(),
+    dealCode: text('deal_code').notNull().unique(),
+    title: text('title').notNull(),
+    campaignId: integer('campaign_id').references(() => campaigns.id, { onDelete: 'set null' }),
+    campaignCompanyRecordId: integer('campaign_company_record_id').references(() => campaignCompanyRecords.id, {
+      onDelete: 'set null',
+    }),
+    companyId: integer('company_id')
+      .references(() => companies.id, { onDelete: 'cascade' })
+      .notNull(),
+    contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+    ownerId: integer('owner_id')
+      .references(() => users.id)
+      .notNull(),
+    stage: text('stage').default('DISCOVERY').notNull(), // DISCOVERY | PROPOSAL | NEGOTIATION | CLOSED_WON | CLOSED_LOST
+    amount: integer('amount').default(0).notNull(), // USD annual contract value
+    probability: integer('probability').default(20).notNull(), // 0 - 100
+    expectedCloseDate: text('expected_close_date'),
+    lossReason: text('loss_reason'),
+    notes: text('notes'),
+    closedAt: timestamp('closed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('deals_owner_idx').on(table.ownerId),
+    index('deals_stage_idx').on(table.stage),
+    index('deals_company_idx').on(table.companyId),
+  ]
+);
+

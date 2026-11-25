@@ -5,6 +5,7 @@ import { db } from '../../db/index.ts';
 import { users, notifications, prospectStatuses, appSettings } from '../../db/schema.ts';
 import {
   AuthRequest,
+  createNotification,
   hashPassword,
   hashToken,
   logAudit,
@@ -13,6 +14,7 @@ import {
   signSessionToken,
   verifyPassword,
 } from '../auth.ts';
+import { sendSystemEmail } from '../integrations.ts';
 import { ensureSeeded } from '../seed.ts';
 import { DEFAULT_OUTCOME_RULES } from '../workflow.ts';
 
@@ -250,6 +252,71 @@ authRouter.post('/change-password', requireAuth, async (req: AuthRequest, res) =
   } catch (error) {
     console.error('Change password error:', error);
     res.status(500).json({ error: 'Failed to update password.' });
+  }
+});
+
+authRouter.post('/request-password-reset', async (req, res) => {
+  try {
+    await ensureSeeded();
+    const { identifier } = req.body as { identifier?: string };
+    if (!identifier || !identifier.trim()) {
+      return res.status(400).json({ error: 'Work email or username is required.' });
+    }
+
+    const lookup = identifier.trim().toLowerCase();
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(or(eq(users.email, lookup), eq(users.username, lookup)))
+      .limit(1);
+
+    let deliveredByEmail = false;
+    if (user && user.isActive) {
+      const token = crypto.randomBytes(24).toString('base64url');
+      await db
+        .update(users)
+        .set({
+          resetTokenHash: hashToken(token),
+          resetTokenExpiresAt: new Date(Date.now() + 1000 * 60 * 60),
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, user.id));
+
+      deliveredByEmail = await sendSystemEmail({
+        to: user.email,
+        subject: 'CadenceOps Password Reset Token',
+        text: `Hello ${user.fullName},\n\nUse this one-time token in CadenceOps -> Invite Token to set a new password (expires in 1 hour):\n\n${token}\n\nIf you did not request this, ignore this email.`,
+      });
+
+      const adminsAndHr = await db
+        .select()
+        .from(users)
+        .where(or(eq(users.role, 'SUPER_ADMIN'), eq(users.role, 'HR_MANAGER')));
+      for (const mgr of adminsAndHr) {
+        await createNotification({
+          userId: mgr.id,
+          type: 'PASSWORD_RESET_REQUESTED',
+          title: `Password Reset Requested: ${user.fullName}`,
+          message: deliveredByEmail
+            ? `Reset email dispatched to ${user.email}.`
+            : `${user.fullName} (${user.email}) requested a password reset. Issue a new reset token in HR & Employees if email relay is not configured.`,
+          entityType: 'user',
+          entityId: user.id,
+          linkPath: '/employees',
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      deliveredByEmail,
+      message: deliveredByEmail
+        ? 'If an active account matches that email, a reset token has been sent to your inbox.'
+        : 'Password reset request logged. If email delivery is not configured, ask your HR Manager or Admin to issue a one-time token in HR & Employees.',
+    });
+  } catch (error) {
+    console.error('Request password reset error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request.' });
   }
 });
 

@@ -11,10 +11,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { StatusLabel } from '../components/StatusLabel.tsx';
 
 export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: number) => void }) {
-  const { refreshProfile } = useAuth();
+  const { user, refreshProfile } = useAuth();
   const [followUps, setFollowUps] = useState<any[]>([]);
+  const [reps, setReps] = useState<Array<{ id: number; fullName: string }>>([]);
   const [tab, setTab] = useState<'today' | 'overdue' | 'upcoming' | 'all' | 'calendar'>('today');
   const [loading, setLoading] = useState(true);
+
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkDate, setBulkDate] = useState(() => {
+    const tmr = new Date();
+    tmr.setDate(tmr.getDate() + 1);
+    return tmr.toISOString().slice(0, 10);
+  });
+  const [bulkTime, setBulkTime] = useState('10:00');
+  const [bulkRepId, setBulkRepId] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const [completeModal, setCompleteModal] = useState<any>(null);
   const [createNext, setCreateNext] = useState(false);
@@ -24,16 +35,23 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
   const [nextNotes, setNextNotes] = useState('');
 
   const today = new Date().toISOString().slice(0, 10);
+  const isManager = user && ['SUPER_ADMIN', 'CAMPAIGN_MANAGER', 'DATA_MANAGER'].includes(user.role);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiFetch('/api/follow-ups');
-      setFollowUps(res.followUps);
+      const [fupRes, empRes] = await Promise.all([
+        apiFetch('/api/follow-ups'),
+        isManager ? apiFetch('/api/employees').catch(() => ({ employees: [] })) : Promise.resolve({ employees: [] }),
+      ]);
+      setFollowUps(fupRes.followUps || []);
+      const salesReps = (empRes.employees || []).filter((e: any) => e.role === 'SALES_REP' && e.isActive !== false);
+      setReps(salesReps);
+      setSelectedIds([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isManager]);
 
   useEffect(() => {
     load();
@@ -77,6 +95,33 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
     await load();
   };
 
+  const handleBulk = async (action: 'COMPLETE' | 'RESCHEDULE' | 'REASSIGN') => {
+    if (selectedIds.length === 0) return;
+    if (action === 'REASSIGN' && !bulkRepId) {
+      toast.error('Select a sales representative first.');
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const res = await apiFetch('/api/follow-ups/bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          ids: selectedIds,
+          action,
+          followUpDate: action === 'RESCHEDULE' ? bulkDate : undefined,
+          followUpTime: action === 'RESCHEDULE' ? bulkTime : undefined,
+          assignedToId: action === 'REASSIGN' ? Number(bulkRepId) : undefined,
+        }),
+      });
+      toast.success(`Updated ${res.updatedCount} follow-up task(s).`);
+      await Promise.all([load(), refreshProfile()]);
+    } catch (err: any) {
+      toast.error(err?.message || 'Bulk follow-up update failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const filtered = followUps.filter((f) => {
     if (tab === 'today') return f.followUpDate === today && (f.status === 'PENDING' || f.status === 'OVERDUE');
     if (tab === 'overdue') return f.status === 'OVERDUE';
@@ -84,7 +129,10 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
     return true;
   });
 
-  // Simple 14-day schedule view for calendar tab
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
   const calendarDays = Array.from({ length: 14 }).map((_, i) => {
     const d = new Date();
     d.setDate(d.getDate() + i - 2);
@@ -98,7 +146,7 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
           Follow-up Task Manager
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Stay on top of due callbacks, emails, and LinkedIn follow-ups without losing historical touchpoints.
+          Stay on top of due callbacks, emails, and LinkedIn follow-ups, or batch-complete and reschedule tasks.
         </p>
       </div>
 
@@ -112,7 +160,10 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
         ].map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id as any)}
+            onClick={() => {
+              setTab(t.id as any);
+              setSelectedIds([]);
+            }}
             className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               tab === t.id
                 ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
@@ -124,6 +175,51 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
           </button>
         ))}
       </div>
+
+      {tab !== 'calendar' && selectedIds.length > 0 && (
+        <Card>
+          <CardContent className="p-3 flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs font-mono font-semibold text-blue-700 dark:text-blue-400">
+              {selectedIds.length} follow-up(s) selected
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={bulkBusy} onClick={() => handleBulk('COMPLETE')}>
+                <Check className="h-3.5 w-3.5" /> Complete Selected
+              </Button>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="date"
+                  className="h-8 w-36 text-xs"
+                  value={bulkDate}
+                  onChange={(e) => setBulkDate(e.target.value)}
+                />
+                <Input
+                  type="time"
+                  className="h-8 w-24 text-xs"
+                  value={bulkTime}
+                  onChange={(e) => setBulkTime(e.target.value)}
+                />
+                <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => handleBulk('RESCHEDULE')}>
+                  <Clock className="h-3.5 w-3.5" /> Reschedule
+                </Button>
+              </div>
+              {isManager && reps.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <SelectField className="h-8 w-44 text-xs" value={bulkRepId} onChange={(e) => setBulkRepId(e.target.value)}>
+                    <option value="">Reassign to rep...</option>
+                    {reps.map((r) => (
+                      <option key={r.id} value={r.id}>{r.fullName}</option>
+                    ))}
+                  </SelectField>
+                  <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => handleBulk('REASSIGN')}>
+                    Reassign
+                  </Button>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {tab === 'calendar' ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
@@ -162,6 +258,13 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
             <table className="w-full text-sm text-left">
               <thead className="border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500">
                 <tr>
+                  <th className="py-3 px-4 w-10">
+                    <input
+                      type="checkbox"
+                      checked={filtered.length > 0 && filtered.every((f) => selectedIds.includes(f.id))}
+                      onChange={(e) => setSelectedIds(e.target.checked ? filtered.map((f) => f.id) : [])}
+                    />
+                  </th>
                   <th className="py-3 px-4 font-medium">Due Date &amp; Time</th>
                   <th className="py-3 px-4 font-medium">Company &amp; Contact</th>
                   <th className="py-3 px-4 font-medium">Type</th>
@@ -172,18 +275,27 @@ export function FollowUpsPage({ onOpenRecord }: { onOpenRecord: (recordId: numbe
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {loading ? (
-                  <tr><td colSpan={6} className="py-8 text-center text-slate-400">Loading follow-ups...</td></tr>
+                  <tr><td colSpan={7} className="py-8 text-center text-slate-400">Loading follow-ups...</td></tr>
                 ) : filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="py-8 text-center text-slate-500">No follow-ups in this view.</td></tr>
+                  <tr><td colSpan={7} className="py-8 text-center text-slate-500">No follow-ups in this view.</td></tr>
                 ) : (
                   filtered.map((f) => (
                     <tr key={f.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      <td className="py-3 px-4">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(f.id)}
+                          onChange={() => toggleSelect(f.id)}
+                        />
+                      </td>
                       <td className="py-3 px-4 font-mono text-xs tabular-nums whitespace-nowrap">
                         {f.followUpDate} {f.followUpTime}
                       </td>
                       <td className="py-3 px-4 cursor-pointer" onClick={() => onOpenRecord(f.campaignCompanyRecordId)}>
                         <div className="font-medium text-blue-700 dark:text-blue-400 hover:underline">{f.companyName}</div>
-                        <div className="text-xs text-slate-500">{f.contactName || '—'} · {f.campaignName}</div>
+                        <div className="text-xs text-slate-500">
+                          {f.contactName || '—'} · {f.campaignName} {isManager && f.assignedToName ? `· ${f.assignedToName}` : ''}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-xs">{formatCodeLabel(f.followUpType)}</td>
                       <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-400 max-w-xs truncate">{f.notes || '—'}</td>

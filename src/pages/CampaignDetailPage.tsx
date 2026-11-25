@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, Save } from 'lucide-react';
+import { ArrowLeft, Copy, Pin, Save, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../lib/api.ts';
 import { useAuth } from '../contexts/AuthContext.tsx';
@@ -7,12 +7,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card.
 import { Button } from '../components/ui/button.tsx';
 import { Input, Label, SelectField, Textarea } from '../components/ui/form.tsx';
 import { StatusLabel } from '../components/StatusLabel.tsx';
-import { formatCodeLabel } from '../lib/utils.ts';
+import { formatCodeLabel, formatCurrency } from '../lib/utils.ts';
+import { getRemarkCategoryLabel, getRemarkCategoryStyle, getSentimentStyle, REMARK_CATEGORIES } from '../lib/remarks.ts';
 
 type CampaignTab =
   | 'overview'
   | 'companies'
   | 'contacts'
+  | 'remarks'
   | 'distribution'
   | 'team'
   | 'activities'
@@ -25,6 +27,7 @@ const TABS: Array<{ id: CampaignTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'companies', label: 'Companies' },
   { id: 'contacts', label: 'Contacts' },
+  { id: 'remarks', label: 'Prospect Remarks' },
   { id: 'distribution', label: 'Data Distribution' },
   { id: 'team', label: 'Sales Team' },
   { id: 'activities', label: 'Activities' },
@@ -50,6 +53,8 @@ export function CampaignDetailPage({
   const [instructionsDraft, setInstructionsDraft] = useState('');
   const [criteriaDraft, setCriteriaDraft] = useState('');
   const [statusDraft, setStatusDraft] = useState('ACTIVE');
+  const [remarkSearch, setRemarkSearch] = useState('');
+  const [remarkCatFilter, setRemarkCatFilter] = useState('');
 
   const canManage = user?.role === 'SUPER_ADMIN' || user?.role === 'DATA_MANAGER' || user?.role === 'CAMPAIGN_MANAGER';
 
@@ -89,6 +94,18 @@ export function CampaignDetailPage({
     }
   };
 
+  const cloneCampaign = async () => {
+    try {
+      const res = await apiFetch<{ campaign: { name: string; campaignCode: string } }>(`/api/campaigns/${campaignId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      toast.success(`Cloned as "${res.campaign.name}" (${res.campaign.campaignCode}) in Draft.`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to clone campaign');
+    }
+  };
+
   if (loading || !data) {
     return <div className="h-64 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 animate-pulse" />;
   }
@@ -116,7 +133,11 @@ export function CampaignDetailPage({
           </div>
         </div>
         {canManage && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" onClick={cloneCampaign}>
+              <Copy className="h-3.5 w-3.5" />
+              <span>Clone Campaign</span>
+            </Button>
             <SelectField className="w-36" value={statusDraft} onChange={(e) => setStatusDraft(e.target.value)}>
               <option value="DRAFT">Draft</option>
               <option value="READY">Ready</option>
@@ -152,22 +173,52 @@ export function CampaignDetailPage({
 
       {tab === 'overview' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
             {[
               { label: 'Target Companies', value: c.targetCompaniesCount },
               { label: 'Imported Records', value: data.companies.length },
               { label: 'Data Allocated', value: allocated },
               { label: 'Worked On', value: worked },
               { label: 'Appointments', value: data.appointments.length },
+              { label: 'Pipeline + Won', value: formatCurrency((data.dealsSummary?.openValue || 0) + (data.dealsSummary?.wonValue || 0)) },
             ].map((m) => (
               <Card key={m.label}>
                 <CardContent className="p-4">
                   <div className="text-xs text-slate-500">{m.label}</div>
-                  <div className="font-mono text-2xl font-semibold tabular-nums mt-1">{m.value}</div>
+                  <div className="font-mono text-xl font-semibold tabular-nums mt-1">{m.value}</div>
                 </CardContent>
               </Card>
             ))}
           </div>
+
+          {Array.isArray(data.funnel) && data.funnel.length > 0 && (
+            <Card>
+              <CardHeader><CardTitle>Stage-by-Stage Conversion Funnel</CardTitle></CardHeader>
+              <CardContent className="space-y-2.5">
+                {data.funnel.map((step: { stage: string; count: number }, idx: number) => {
+                  const base = Math.max(1, data.funnel[0]?.count || 1);
+                  const pct = Math.round((step.count / base) * 100);
+                  const prev = idx > 0 ? data.funnel[idx - 1].count : step.count;
+                  const stepConv = idx > 0 && prev > 0 ? Math.round((step.count / prev) * 100) : 100;
+                  return (
+                    <div key={step.stage} className="grid grid-cols-12 items-center gap-3 text-xs">
+                      <div className="col-span-4 sm:col-span-3 font-medium text-slate-700 dark:text-slate-200">{step.stage}</div>
+                      <div className="col-span-5 sm:col-span-7 h-5 bg-slate-100 dark:bg-slate-800 rounded overflow-hidden">
+                        <div
+                          className="h-full bg-blue-600 dark:bg-blue-500 transition-all"
+                          style={{ width: `${Math.max(step.count > 0 ? 4 : 0, Math.min(100, pct))}%` }}
+                        />
+                      </div>
+                      <div className="col-span-3 sm:col-span-2 text-right font-mono tabular-nums">
+                        <span className="font-semibold">{step.count}</span>
+                        {idx > 0 && <span className="text-slate-400 ml-1.5">({stepConv}%)</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card>
@@ -216,6 +267,7 @@ export function CampaignDetailPage({
                   <th className="py-3 px-4 font-medium">Industry / Country</th>
                   <th className="py-3 px-4 font-medium">Assigned Rep</th>
                   <th className="py-3 px-4 font-medium">Status</th>
+                  <th className="py-3 px-4 font-medium">Prospect Brief &amp; Latest Remark</th>
                   <th className="py-3 px-4 font-medium text-right">Fit Score</th>
                 </tr>
               </thead>
@@ -230,6 +282,23 @@ export function CampaignDetailPage({
                     <td className="py-3 px-4 text-xs text-slate-500">{r.industry || '—'} · {r.country || '—'}</td>
                     <td className="py-3 px-4 text-xs">{r.assignedToName || 'Unassigned'}</td>
                     <td className="py-3 px-4"><StatusLabel status={r.status} /></td>
+                    <td className="py-3 px-4 max-w-sm">
+                      <div className="flex flex-wrap items-center gap-1 mb-0.5">
+                        {r.prospectSentiment && (
+                          <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${getSentimentStyle(r.prospectSentiment)}`}>
+                            {r.prospectSentiment}
+                          </span>
+                        )}
+                        {r.remarksCount > 0 && (
+                          <span className="font-mono text-[10px] text-slate-500 tabular-nums">
+                            {r.remarksCount} remark{r.remarksCount === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
+                        {r.latestRemark?.content || r.prospectSummary || <span className="text-slate-400">No remarks yet</span>}
+                      </div>
+                    </td>
                     <td className="py-3 px-4 text-right font-mono tabular-nums">{r.fitScore}</td>
                   </tr>
                 ))}
@@ -237,6 +306,75 @@ export function CampaignDetailPage({
             </table>
           </div>
         </Card>
+      )}
+
+      {tab === 'remarks' && (
+        <div className="space-y-4">
+          <Card>
+            <CardContent className="p-4 flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+                <Input
+                  className="pl-9"
+                  placeholder="Search remarks by company, rep, or note text..."
+                  value={remarkSearch}
+                  onChange={(e) => setRemarkSearch(e.target.value)}
+                />
+              </div>
+              <SelectField className="sm:w-56" value={remarkCatFilter} onChange={(e) => setRemarkCatFilter(e.target.value)}>
+                <option value="">All Remark Categories</option>
+                {REMARK_CATEGORIES.map((cat) => (
+                  <option key={cat.value} value={cat.value}>{cat.label}</option>
+                ))}
+              </SelectField>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="divide-y divide-slate-100 dark:divide-slate-800 p-0">
+              {(data.remarks || [])
+                .filter((rm: any) => {
+                  if (remarkCatFilter && rm.category !== remarkCatFilter) return false;
+                  if (remarkSearch) {
+                    const hay = `${rm.companyName} ${rm.contactName || ''} ${rm.authorName} ${rm.content}`.toLowerCase();
+                    if (!hay.includes(remarkSearch.trim().toLowerCase())) return false;
+                  }
+                  return true;
+                })
+                .map((rm: any) => (
+                  <div
+                    key={rm.id}
+                    className="p-4 hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer space-y-1.5"
+                    onClick={() => onOpenRecord(rm.campaignCompanyRecordId)}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-semibold text-sm text-slate-900 dark:text-white">{rm.companyName}</span>
+                        {rm.isPinned && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300 bg-amber-100 text-amber-900 text-[10px] font-semibold">
+                            <Pin className="h-2.5 w-2.5" /> PINNED
+                          </span>
+                        )}
+                        <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${getRemarkCategoryStyle(rm.category)}`}>
+                          {getRemarkCategoryLabel(rm.category)}
+                        </span>
+                        {rm.contactName && <span className="text-slate-500">· Contact: {rm.contactName}</span>}
+                      </div>
+                      <span className="font-mono text-xs text-slate-500 tabular-nums">
+                        {rm.authorName} · {new Date(rm.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-line">{rm.content}</p>
+                  </div>
+                ))}
+              {(data.remarks || []).length === 0 && (
+                <div className="p-8 text-center text-sm text-slate-500">
+                  No sales rep remarks logged in this campaign yet.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {tab === 'contacts' && (

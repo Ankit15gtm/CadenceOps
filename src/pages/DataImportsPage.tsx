@@ -301,11 +301,12 @@ export function DataImportsPage() {
 
           {step === 'preview' && previewResult && (
             <div className="space-y-5">
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
                 {[
                   { label: 'Total Rows', value: previewResult.summary.totalRows },
                   { label: 'New Valid Rows', value: previewResult.summary.validNewRows, tone: 'text-emerald-700' },
                   { label: 'Duplicates Detected', value: previewResult.summary.duplicatesDetected, tone: 'text-amber-700' },
+                  { label: 'DNC Blocked', value: previewResult.summary.dncSuppressedRows || 0, tone: 'text-red-700' },
                   { label: 'Missing Info', value: previewResult.summary.missingInfoRows },
                   { label: 'Invalid Rows (Skipped)', value: previewResult.summary.invalidRows, tone: 'text-red-700' },
                 ].map((s) => (
@@ -356,7 +357,14 @@ export function DataImportsPage() {
                           <div className="text-slate-500">{r.raw.workEmail || r.raw.domain || r.raw.website || '—'}</div>
                         </td>
                         <td className="py-2.5 px-3">
-                          <StatusLabel status={r.validationStatus} />
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusLabel status={r.validationStatus} />
+                            {r.isDncSuppressed && (
+                              <span className="px-1.5 py-0.5 rounded border border-red-300 bg-red-50 text-red-700 text-[10px] font-semibold">
+                                DNC BLOCKED
+                              </span>
+                            )}
+                          </div>
                           {r.issues?.length > 0 && (
                             <div className="text-slate-500 mt-1">{r.issues.join(', ')}</div>
                           )}

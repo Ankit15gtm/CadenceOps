@@ -21,13 +21,22 @@ export function DataDistributionPage() {
   const [selectedRecordIds, setSelectedRecordIds] = useState<number[]>([]);
   const [reassignRepId, setReassignRepId] = useState('');
   const [reassignReason, setReassignReason] = useState('');
+  const [sequences, setSequences] = useState<any[]>([]);
+  const [enrollSeqId, setEnrollSeqId] = useState('');
+  const [staleRecords, setStaleRecords] = useState<any[]>([]);
+  const [daysIdle, setDaysIdle] = useState('5');
   const [busy, setBusy] = useState(false);
 
   const loadInitial = useCallback(async () => {
     try {
-      const [cmpRes, empRes] = await Promise.all([apiFetch('/api/campaigns'), apiFetch('/api/employees')]);
+      const [cmpRes, empRes, seqRes] = await Promise.all([
+        apiFetch('/api/campaigns'),
+        apiFetch('/api/employees'),
+        apiFetch('/api/sequences'),
+      ]);
       setCampaigns(cmpRes.campaigns);
       setSalesReps(empRes.employees.filter((e: any) => e.role === 'SALES_REP' && e.isActive));
+      setSequences(seqRes.sequences.filter((s: any) => s.isActive));
       if (cmpRes.campaigns.length > 0 && !selectedCampaignId) {
         setSelectedCampaignId(String(cmpRes.campaigns[0].id));
       }
@@ -39,13 +48,17 @@ export function DataDistributionPage() {
   const loadCampaignDist = useCallback(async () => {
     if (!selectedCampaignId) return;
     try {
-      const res = await apiFetch(`/api/distribution/campaigns/${selectedCampaignId}`);
+      const [res, staleRes] = await Promise.all([
+        apiFetch(`/api/distribution/campaigns/${selectedCampaignId}`),
+        apiFetch(`/api/distribution/stale?daysIdle=${Number(daysIdle || 5)}`),
+      ]);
       setDistData(res);
+      setStaleRecords(staleRes.staleRecords || []);
       setSelectedRecordIds([]);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to load campaign distribution');
     }
-  }, [selectedCampaignId]);
+  }, [selectedCampaignId, daysIdle]);
 
   useEffect(() => {
     loadInitial();
@@ -117,6 +130,49 @@ export function DataDistributionPage() {
 
   const toggleSelect = (id: number) => {
     setSelectedRecordIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const handleEnrollSequence = async () => {
+    if (selectedRecordIds.length === 0 || !enrollSeqId) {
+      toast.error('Select records and a cadence sequence.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiFetch(`/api/sequences/${enrollSeqId}/enroll`, {
+        method: 'POST',
+        body: JSON.stringify({ recordIds: selectedRecordIds }),
+      });
+      toast.success(`Enrolled ${res.enrolledCount} record(s) into sequence.`);
+      setSelectedRecordIds([]);
+      await loadCampaignDist();
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to enroll records');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStaleAction = async (action: 'NOTIFY' | 'RECLAIM', ids?: number[]) => {
+    const targetIds = ids || staleRecords.map((r) => r.id);
+    if (targetIds.length === 0) return;
+    setBusy(true);
+    try {
+      const res = await apiFetch('/api/distribution/reclaim-stale', {
+        method: 'POST',
+        body: JSON.stringify({ recordIds: targetIds, action }),
+      });
+      toast.success(
+        action === 'NOTIFY'
+          ? `Sent SLA warning notifications to ${res.notifiedReps} representative(s).`
+          : `Reclaimed ${res.reclaimedCount} untouched record(s) back to the unassigned pool.`
+      );
+      await loadCampaignDist();
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to process stale records');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -229,12 +285,23 @@ export function DataDistributionPage() {
                     ))}
                   </SelectField>
                   <Input
-                    className="w-44 h-8 text-xs"
+                    className="w-40 h-8 text-xs"
                     placeholder="Reason (optional)"
                     value={reassignReason}
                     onChange={(e) => setReassignReason(e.target.value)}
                   />
-                  <Button size="sm" onClick={handleReassignSelected} disabled={busy}>Apply</Button>
+                  <Button size="sm" onClick={handleReassignSelected} disabled={busy}>Reassign</Button>
+                  {sequences.length > 0 && (
+                    <>
+                      <SelectField className="w-44 h-8 text-xs" value={enrollSeqId} onChange={(e) => setEnrollSeqId(e.target.value)}>
+                        <option value="">Enroll in cadence...</option>
+                        {sequences.map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </SelectField>
+                      <Button size="sm" variant="outline" onClick={handleEnrollSequence} disabled={busy}>Enroll</Button>
+                    </>
+                  )}
                 </div>
               )}
             </CardHeader>
@@ -311,6 +378,68 @@ export function DataDistributionPage() {
                 </tbody>
               </table>
             </div>
+          </Card>
+          {/* SLA / Stale Lead Detection & Reclaim */}
+          <Card>
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <CardTitle>SLA / Stale Untouched Leads ({staleRecords.length})</CardTitle>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Detect assigned leads untouched past SLA or due date and remind reps or reclaim back to the pool.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Label className="mb-0 text-xs">Idle days:</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  className="w-20 h-8 text-xs font-mono"
+                  value={daysIdle}
+                  onChange={(e) => setDaysIdle(e.target.value)}
+                />
+                {staleRecords.length > 0 && (
+                  <>
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => handleStaleAction('NOTIFY')}>
+                      Send SLA Reminder
+                    </Button>
+                    <Button size="sm" variant="outline" className="text-amber-700" disabled={busy} onClick={() => handleStaleAction('RECLAIM')}>
+                      Reclaim All to Pool
+                    </Button>
+                  </>
+                )}
+              </div>
+            </CardHeader>
+            {staleRecords.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                    <tr>
+                      <th className="py-2.5 px-4 font-medium">Company</th>
+                      <th className="py-2.5 px-4 font-medium">Assigned Rep</th>
+                      <th className="py-2.5 px-4 font-medium">SLA Trigger</th>
+                      <th className="py-2.5 px-4 font-medium text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {staleRecords.slice(0, 25).map((sr) => (
+                      <tr key={sr.id}>
+                        <td className="py-2.5 px-4 font-medium">{sr.companyName}</td>
+                        <td className="py-2.5 px-4">{sr.assignedToName}</td>
+                        <td className="py-2.5 px-4 text-amber-700 dark:text-amber-400">{sr.reason}</td>
+                        <td className="py-2.5 px-4 text-right space-x-1">
+                          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleStaleAction('NOTIFY', [sr.id])}>
+                            Remind
+                          </Button>
+                          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleStaleAction('RECLAIM', [sr.id])}>
+                            Reclaim
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </>
       )}

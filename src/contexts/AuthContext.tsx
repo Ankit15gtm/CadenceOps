@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
+import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth, googleAuthProvider } from '../lib/firebase.ts';
 import { apiFetch, registerTokenRefresher, setMemoryToken } from '../lib/api.ts';
 
@@ -61,6 +61,8 @@ interface AuthContextValue {
   recentNotifications: AppNotification[];
   statuses: ProspectStatus[];
   outcomeRules: OutcomeRule[];
+  googleAccessToken: string | null;
+  connectGoogleWorkspace: () => Promise<string | null>;
   loginWithGoogle: () => Promise<void>;
   loginWithCredentials: (identifier: string, password: string) => Promise<void>;
   claimInitialAdmin: (payload: { email: string; fullName: string; password: string }) => Promise<void>;
@@ -79,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [recentNotifications, setRecentNotifications] = useState<AppNotification[]>([]);
   const [statuses, setStatuses] = useState<ProspectStatus[]>([]);
   const [outcomeRules, setOutcomeRules] = useState<OutcomeRule[]>([]);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
 
   const toggleDarkMode = useCallback(() => {
     setDarkMode((prev) => {
@@ -121,6 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(null);
         }
       } else {
+        setGoogleAccessToken(null);
         setLoading(false);
       }
       setLoading(false);
@@ -134,10 +138,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithGoogle = useCallback(async () => {
     const cred = await signInWithPopup(auth, googleAuthProvider);
+    const oauthCred = GoogleAuthProvider.credentialFromResult(cred);
+    if (oauthCred?.accessToken) {
+      setGoogleAccessToken(oauthCred.accessToken);
+    }
     const token = await cred.user.getIdToken();
     setMemoryToken(token);
     await refreshProfile();
   }, [refreshProfile]);
+
+  const connectGoogleWorkspace = useCallback(async () => {
+    const cred = await signInWithPopup(auth, googleAuthProvider);
+    const oauthCred = GoogleAuthProvider.credentialFromResult(cred);
+    const accessToken = oauthCred?.accessToken || null;
+    setGoogleAccessToken(accessToken);
+    return accessToken;
+  }, []);
 
   const loginWithCredentials = useCallback(
     async (identifier: string, password: string) => {
@@ -177,6 +193,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     setMemoryToken(null);
+    setGoogleAccessToken(null);
     setUser(null);
     try {
       await firebaseSignOut(auth);
@@ -196,6 +213,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         recentNotifications,
         statuses,
         outcomeRules,
+        googleAccessToken,
+        connectGoogleWorkspace,
         loginWithGoogle,
         loginWithCredentials,
         claimInitialAdmin,

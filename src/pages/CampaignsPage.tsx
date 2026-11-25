@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Plus, Search, ArrowRight } from 'lucide-react';
+import { Plus, Search, ArrowRight, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../lib/api.ts';
 import { useAuth } from '../contexts/AuthContext.tsx';
@@ -120,6 +120,21 @@ export function CampaignsPage({ onOpenCampaign }: { onOpenCampaign: (id: number)
     }
   };
 
+  const handleClone = async (e: React.MouseEvent, c: CampaignRow) => {
+    e.stopPropagation();
+    try {
+      const res = await apiFetch<{ campaign: { id: number; name: string } }>(`/api/campaigns/${c.id}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      toast.success(`Cloned campaign as "${res.campaign.name}" (Draft).`);
+      await load();
+      onOpenCampaign(res.campaign.id);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to clone campaign');
+    }
+  };
+
   const filtered = campaigns.filter((c) => {
     if (statusFilter && c.status !== statusFilter) return false;
     if (search) {
@@ -224,7 +239,18 @@ export function CampaignsPage({ onOpenCampaign }: { onOpenCampaign: (id: number)
                     <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">
                       {c.totalAppointments}
                     </td>
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3 px-4 text-right whitespace-nowrap space-x-1">
+                      {canManage && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => handleClone(e, c)}
+                          title="Clone campaign playbook & team"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          <span>Clone</span>
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"

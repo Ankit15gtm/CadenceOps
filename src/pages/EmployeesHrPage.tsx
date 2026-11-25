@@ -90,6 +90,15 @@ export function EmployeesPage() {
           reportingManagerId: editEmp.reportingManagerId || null,
         }),
       });
+      if (editEmp.role === 'SALES_REP') {
+        await apiFetch(`/api/employees/${editEmp.id}/targets`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            dailyCallTarget: Number(editEmp.dailyCallTarget || 35),
+            dailyOutreachTarget: Number(editEmp.dailyOutreachTarget || 60),
+          }),
+        });
+      }
       toast.success('Employee profile updated.');
       setEditEmp(null);
       await load();
@@ -278,6 +287,28 @@ export function EmployeesPage() {
                     {employees.filter((e) => e.id !== editEmp.id).map((e) => <option key={e.id} value={e.id}>{e.fullName}</option>)}
                   </SelectField>
                 </div>
+                {editEmp.role === 'SALES_REP' && (
+                  <>
+                    <div>
+                      <Label>Daily Call Target</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={editEmp.dailyCallTarget ?? 35}
+                        onChange={(e) => setEditEmp({ ...editEmp, dailyCallTarget: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label>Daily Outreach Target</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={editEmp.dailyOutreachTarget ?? 60}
+                        onChange={(e) => setEditEmp({ ...editEmp, dailyOutreachTarget: e.target.value })}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setEditEmp(null)}>Cancel</Button>
@@ -350,13 +381,18 @@ export function EmployeesPage() {
 export function LeaveRequestsPage() {
   const { user } = useAuth();
   const [leaves, setLeaves] = useState<any[]>([]);
+  const [reps, setReps] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ leaveType: 'Annual', startDate: '', endDate: '', reason: '' });
-  const canApprove = user?.role === 'SUPER_ADMIN' || user?.role === 'HR_MANAGER';
+  const [reassignLeave, setReassignLeave] = useState<any>(null);
+  const [coverRepId, setCoverRepId] = useState('');
+  const [includeQueueRecords, setIncludeQueueRecords] = useState(true);
+  const canApprove = user?.role === 'SUPER_ADMIN' || user?.role === 'HR_MANAGER' || user?.role === 'CAMPAIGN_MANAGER';
 
   const load = useCallback(async () => {
-    const res = await apiFetch('/api/hr/leaves');
-    setLeaves(res.leaves);
+    const [lvRes, empRes] = await Promise.all([apiFetch('/api/hr/leaves'), apiFetch('/api/employees').catch(() => ({ employees: [] }))]);
+    setLeaves(lvRes.leaves);
+    setReps((empRes.employees || []).filter((e: any) => e.role === 'SALES_REP' && e.isActive));
   }, []);
 
   useEffect(() => {
@@ -373,9 +409,31 @@ export function LeaveRequestsPage() {
   };
 
   const decide = async (id: number, status: string) => {
-    await apiFetch(`/api/hr/leaves/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
-    toast.success(`Leave ${status.toLowerCase()}`);
+    const res = await apiFetch(`/api/hr/leaves/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+    if (status === 'APPROVED' && (res.impactedFollowUps > 0 || res.unworkedAssigned > 0)) {
+      toast.warning(
+        `Leave approved. Coverage alert: ${res.impactedFollowUps} follow-up(s) in window and ${res.unworkedAssigned} unworked queue record(s).`
+      );
+    } else {
+      toast.success(`Leave ${status.toLowerCase()}`);
+    }
     await load();
+  };
+
+  const handleReassignCoverage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reassignLeave || !coverRepId) return;
+    try {
+      const res = await apiFetch(`/api/hr/leaves/${reassignLeave.id}/reassign-work`, {
+        method: 'POST',
+        body: JSON.stringify({ coverRepId: Number(coverRepId), includeQueueRecords }),
+      });
+      toast.success(`Reassigned ${res.reassignedFollowUps} follow-up(s) and ${res.reassignedQueue} queue record(s) for coverage.`);
+      setReassignLeave(null);
+      setCoverRepId('');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to reassign leave coverage');
+    }
   };
 
   return (
@@ -410,12 +468,17 @@ export function LeaveRequestsPage() {
                   <td className="py-3 px-4 text-xs text-slate-500">{l.reason || '—'}</td>
                   <td className="py-3 px-4"><StatusLabel status={l.status} /></td>
                   {canApprove && (
-                    <td className="py-3 px-4 text-right space-x-1">
-                      {l.status === 'PENDING' && (
+                    <td className="py-3 px-4 text-right space-x-1 whitespace-nowrap">
+                      {l.status === 'PENDING' && (user?.role === 'SUPER_ADMIN' || user?.role === 'HR_MANAGER') && (
                         <>
                           <Button size="sm" variant="outline" onClick={() => decide(l.id, 'APPROVED')}>Approve</Button>
                           <Button size="sm" variant="outline" onClick={() => decide(l.id, 'REJECTED')}>Reject</Button>
                         </>
+                      )}
+                      {l.status === 'APPROVED' && (
+                        <Button size="sm" variant="outline" onClick={() => setReassignLeave(l)}>
+                          Reassign Coverage
+                        </Button>
                       )}
                     </td>
                   )}
@@ -449,6 +512,39 @@ export function LeaveRequestsPage() {
               <Button type="submit">Submit Request</Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(reassignLeave)} onOpenChange={(o) => !o && setReassignLeave(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Reassign Leave Coverage — {reassignLeave?.employeeName}</DialogTitle></DialogHeader>
+          {reassignLeave && (
+            <form onSubmit={handleReassignCoverage} className="space-y-3 mt-2">
+              <p className="text-xs text-slate-500">
+                Transfer pending follow-ups scheduled between {reassignLeave.startDate} and {reassignLeave.endDate} to another active Sales Rep.
+              </p>
+              <div>
+                <Label>Covering Sales Representative *</Label>
+                <SelectField value={coverRepId} onChange={(e) => setCoverRepId(e.target.value)} required>
+                  <option value="">Select covering rep...</option>
+                  {reps.filter((r) => r.id !== reassignLeave.userId).map((r) => (
+                    <option key={r.id} value={r.id}>{r.fullName}</option>
+                  ))}
+                </SelectField>
+              </div>
+              <label className="flex items-center gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeQueueRecords}
+                  onChange={(e) => setIncludeQueueRecords(e.target.checked)}
+                />
+                <span>Also reassign unworked (&quot;Not Yet Worked&quot;) queue records</span>
+              </label>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setReassignLeave(null)}>Cancel</Button>
+                <Button type="submit">Transfer Coverage</Button>
+              </div>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
     </div>

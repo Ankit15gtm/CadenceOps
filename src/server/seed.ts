@@ -21,6 +21,13 @@ import {
   notifications,
   auditLogs,
   leaveRequests,
+  dncSuppression,
+  outreachTemplates,
+  sequences,
+  sequenceSteps,
+  dataFlags,
+  prospectRemarks,
+  deals,
 } from '../db/schema.ts';
 import { hashPassword } from './auth.ts';
 import { DEFAULT_OUTCOME_RULES } from './workflow.ts';
@@ -102,10 +109,401 @@ async function ensureDemoAccounts(): Promise<void> {
   }
 }
 
+async function ensureEnterpriseSeed(): Promise<void> {
+  const existingTemplates = await db.select({ count: sql<number>`count(*)::int` }).from(outreachTemplates);
+  if ((existingTemplates[0]?.count ?? 0) === 0) {
+    const allUsers = await db.select().from(users);
+    const allCampaigns = await db.select().from(campaigns);
+    const allCompanies = await db.select().from(companies);
+    const allContacts = await db.select().from(contacts);
+    const allCCRs = await db.select().from(campaignCompanyRecords);
+
+    const creator = allUsers.find((u) => u.role === 'CAMPAIGN_MANAGER') || allUsers[0];
+    const rep = allUsers.find((u) => u.role === 'SALES_REP') || allUsers[0];
+    const cmp1 = allCampaigns[0];
+
+    const insertedTemplates = await db
+      .insert(outreachTemplates)
+      .values([
+        {
+          campaignId: cmp1?.id ?? null,
+          name: 'IT Security Audit Velocity Intro',
+          channel: 'EMAIL',
+          subject: 'Quick question on {{company_name}} cloud audit readiness',
+          body: 'Hi {{first_name}},\n\nI noticed you lead {{job_title}} initiatives at {{company_name}}. Several infrastructure teams we work with cut manual SOC 2 evidence collection by 60% using automated posture checks.\n\nOpen to a brief 15-minute walkthrough this Thursday?\n\nBest,\n{{sender_name}}',
+          createdById: creator?.id ?? null,
+        },
+        {
+          campaignId: null,
+          name: 'LinkedIn Executive Connection Follow-up',
+          channel: 'LINKEDIN_MESSAGE',
+          subject: null,
+          body: 'Hi {{first_name}}, thanks for connecting! Saw the growth across {{company_name}} recently—happy to share how peer teams are streamlining outbound & compliance workflows if useful.',
+          createdById: creator?.id ?? null,
+        },
+        {
+          campaignId: cmp1?.id ?? null,
+          name: 'Cold Call Opener + Objection Script',
+          channel: 'CALL_SCRIPT',
+          subject: null,
+          body: 'OPENER: "Hi {{first_name}}, this is {{sender_name}} calling from CadenceOps. Caught you briefly—do you have 30 seconds?"\n\nHOOK: "We help {{job_title}} leaders at companies like {{company_name}} eliminate cloud config drift before audit cycles."\n\nIF BUSY: "Totally understand—is tomorrow morning or Thursday afternoon better for a 10-minute look?"',
+          createdById: creator?.id ?? null,
+        },
+        {
+          campaignId: null,
+          name: 'WhatsApp Quick Confirmation',
+          channel: 'WHATSAPP',
+          subject: null,
+          body: 'Hi {{first_name}}, {{sender_name}} here following up on our brief note for {{company_name}}. Would you like me to send over the 2-page case study?',
+          createdById: creator?.id ?? null,
+        },
+      ])
+      .returning();
+
+    const [seq] = await db
+      .insert(sequences)
+      .values({
+        campaignId: cmp1?.id ?? null,
+        name: '10-Day Enterprise Multi-Channel Cadence',
+        description: 'Balanced Phone + Email + LinkedIn executive outreach sequence with automatic reply/meeting stop.',
+        stopOnReply: true,
+        stopOnAppointment: true,
+        createdById: creator?.id ?? null,
+      })
+      .returning();
+
+    if (seq) {
+      await db.insert(sequenceSteps).values([
+        {
+          sequenceId: seq.id,
+          stepOrder: 1,
+          delayDays: 0,
+          channel: 'PHONE_CALL',
+          templateId: insertedTemplates[2]?.id ?? null,
+          instructions: 'Initial discovery dial + voicemail if unanswered.',
+        },
+        {
+          sequenceId: seq.id,
+          stepOrder: 2,
+          delayDays: 2,
+          channel: 'EMAIL',
+          templateId: insertedTemplates[0]?.id ?? null,
+          instructions: 'Send personalized audit velocity intro email.',
+        },
+        {
+          sequenceId: seq.id,
+          stepOrder: 3,
+          delayDays: 3,
+          channel: 'LINKEDIN_CONNECTION',
+          templateId: insertedTemplates[1]?.id ?? null,
+          instructions: 'Send LinkedIn connection request referencing company milestone.',
+        },
+        {
+          sequenceId: seq.id,
+          stepOrder: 4,
+          delayDays: 5,
+          channel: 'PHONE_CALL',
+          templateId: insertedTemplates[2]?.id ?? null,
+          instructions: 'Final break-up / reschedule call attempt.',
+        },
+      ]);
+    }
+
+    await db
+      .insert(dncSuppression)
+      .values([
+        {
+          type: 'DOMAIN',
+          value: 'competitor-blocked.example',
+          rawValue: 'competitor-blocked.example',
+          reason: 'Direct competitor — global exclusion',
+          addedById: creator?.id ?? null,
+        },
+        {
+          type: 'EMAIL',
+          value: 'optout@legacysystems.example',
+          rawValue: 'optout@legacysystems.example',
+          reason: 'GDPR opt-out requested',
+          addedById: creator?.id ?? null,
+        },
+      ])
+      .onConflictDoNothing();
+
+    if (allCompanies[0] && rep) {
+      await db.insert(dataFlags).values({
+        campaignCompanyRecordId: allCCRs[0]?.id ?? null,
+        companyId: allCompanies[0].id,
+        contactId: allContacts[0]?.id ?? null,
+        reportedById: rep.id,
+        issueType: 'WRONG_NUMBER',
+        proposedFix: '+1-415-555-0199',
+        notes: 'Switchboard routed to reception; direct line needed for CTO.',
+        status: 'OPEN',
+      });
+    }
+
+    await db
+      .insert(appSettings)
+      .values([
+        {
+          key: 'integrations',
+          value: {
+            slackWebhookUrl: '',
+            notifyOnAppointment: true,
+            notifyOnDataRequest: true,
+            notifyOnSlaBreach: true,
+            defaultTimezone: 'America/New_York',
+          },
+        },
+        {
+          key: 'custom_fields',
+          value: {
+            companyFields: ['Tech Stack', 'Audit Cycle', 'Compliance Framework'],
+          },
+        },
+      ])
+      .onConflictDoNothing();
+  }
+
+  const remarksCountRes = await db.select({ count: sql<number>`count(*)::int` }).from(prospectRemarks);
+  if ((remarksCountRes[0]?.count ?? 0) === 0) {
+    const allCCRs = await db.select().from(campaignCompanyRecords);
+    const allContacts = await db.select().from(contacts);
+    const allUsers = await db.select().from(users);
+    const jordan = allUsers.find((u) => u.email === 'jordan@cadenceops.io') || allUsers.find((u) => u.role === 'SALES_REP');
+    const sofia = allUsers.find((u) => u.email === 'sofia@cadenceops.io') || jordan;
+    const cameron = allUsers.find((u) => u.email === 'cameron@cadenceops.io') || allUsers[0];
+
+    if (allCCRs.length > 0 && jordan) {
+      const ccr0 = allCCRs[0]!;
+      const ccr1 = allCCRs[1];
+      const ccr2 = allCCRs[2];
+
+      await db
+        .update(campaignCompanyRecords)
+        .set({
+          prospectSummary: 'VP Infrastructure & CTO aligned on Q1 SOC 2 automation project; discovery call booked with technical stakeholders.',
+          prospectSentiment: 'HOT',
+        })
+        .where(eq(campaignCompanyRecords.id, ccr0.id));
+
+      const sampleRemarks: Array<{
+        campaignId: number;
+        campaignCompanyRecordId: number;
+        companyId: number;
+        contactId: number | null;
+        authorId: number;
+        category: string;
+        content: string;
+        isPinned: boolean;
+      }> = [
+        {
+          campaignId: ccr0.campaignId,
+          campaignCompanyRecordId: ccr0.id,
+          companyId: ccr0.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr0.companyId)?.id ?? null,
+          authorId: jordan.id,
+          category: 'PAIN_POINT',
+          content: 'Manual AWS drift evidence collection is taking their DevOps team ~18 hrs/month before SOC 2 Type II audits.',
+          isPinned: true,
+        },
+        {
+          campaignId: ccr0.campaignId,
+          campaignCompanyRecordId: ccr0.id,
+          companyId: ccr0.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr0.companyId)?.id ?? null,
+          authorId: jordan.id,
+          category: 'BUDGET_TIMELINE',
+          content: 'Security compliance budget resets in January ($35k–$50k range). Claire wants architecture diagram before next call.',
+          isPinned: false,
+        },
+      ];
+
+      if (ccr1) {
+        await db
+          .update(campaignCompanyRecords)
+          .set({
+            prospectSummary: 'Interested in drift tooling for Q1; currently evaluating 2 competitors and waiting on our FinTech case study.',
+            prospectSentiment: 'WARM',
+          })
+          .where(eq(campaignCompanyRecords.id, ccr1.id));
+
+        sampleRemarks.push({
+          campaignId: ccr1.campaignId,
+          campaignCompanyRecordId: ccr1.id,
+          companyId: ccr1.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr1.companyId)?.id ?? null,
+          authorId: jordan.id,
+          category: 'COMPETITOR_STACK',
+          content: 'Currently trialing Wiz and homegrown Terraform checks; frustrated by alert noise and lack of automated remediation.',
+          isPinned: true,
+        });
+      }
+
+      if (ccr2 && sofia && cameron) {
+        await db
+          .update(campaignCompanyRecords)
+          .set({
+            prospectSummary: 'Board prep underway; requested callback next week once executive priorities finalize.',
+            prospectSentiment: 'NEUTRAL',
+          })
+          .where(eq(campaignCompanyRecords.id, ccr2.id));
+
+        sampleRemarks.push({
+          campaignId: ccr2.campaignId,
+          campaignCompanyRecordId: ccr2.id,
+          companyId: ccr2.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr2.companyId)?.id ?? null,
+          authorId: cameron.id,
+          category: 'HANDOVER',
+          content: 'Manager note: Prioritize multi-region compliance angle when calling Hannah back after board meeting.',
+          isPinned: true,
+        });
+      }
+
+      await db.insert(prospectRemarks).values(sampleRemarks);
+    }
+  }
+
+  const dealsCountRes = await db.select({ count: sql<number>`count(*)::int` }).from(deals);
+  if ((dealsCountRes[0]?.count ?? 0) === 0) {
+    const allCCRs = await db.select().from(campaignCompanyRecords);
+    const allContacts = await db.select().from(contacts);
+    const allUsers = await db.select().from(users);
+    const jordan = allUsers.find((u) => u.email === 'jordan@cadenceops.io') || allUsers.find((u) => u.role === 'SALES_REP');
+    const sofia = allUsers.find((u) => u.email === 'sofia@cadenceops.io') || jordan;
+    const devon = allUsers.find((u) => u.email === 'devon@cadenceops.io') || jordan;
+
+    if (allCCRs.length > 0 && jordan) {
+      const sampleDeals: Array<{
+        dealCode: string;
+        title: string;
+        campaignId: number | null;
+        campaignCompanyRecordId: number | null;
+        companyId: number;
+        contactId: number | null;
+        ownerId: number;
+        stage: string;
+        amount: number;
+        probability: number;
+        expectedCloseDate: string;
+        lossReason: string | null;
+        notes: string;
+        closedAt: Date | null;
+      }> = [];
+
+      const ccr0 = allCCRs[0];
+      if (ccr0) {
+        sampleDeals.push({
+          dealCode: 'DEAL-2026-001',
+          title: 'SOC 2 Posture Automation Annual License',
+          campaignId: ccr0.campaignId,
+          campaignCompanyRecordId: ccr0.id,
+          companyId: ccr0.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr0.companyId)?.id ?? null,
+          ownerId: ccr0.assignedToId || jordan.id,
+          stage: 'NEGOTIATION',
+          amount: 48000,
+          probability: 75,
+          expectedCloseDate: daysOffset(18),
+          lossReason: null,
+          notes: 'Security architecture sign-off completed; procurement reviewing MSA redlines.',
+          closedAt: null,
+        });
+      }
+
+      const ccr1 = allCCRs[1];
+      if (ccr1) {
+        sampleDeals.push({
+          dealCode: 'DEAL-2026-002',
+          title: 'Multi-Cloud Governance Enterprise Rollout',
+          campaignId: ccr1.campaignId,
+          campaignCompanyRecordId: ccr1.id,
+          companyId: ccr1.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr1.companyId)?.id ?? null,
+          ownerId: ccr1.assignedToId || jordan.id,
+          stage: 'PROPOSAL',
+          amount: 64000,
+          probability: 50,
+          expectedCloseDate: daysOffset(30),
+          lossReason: null,
+          notes: 'Technical demo complete; pricing tiers shared for 3 cloud regions.',
+          closedAt: null,
+        });
+      }
+
+      const ccr2 = allCCRs[2];
+      if (ccr2 && sofia) {
+        sampleDeals.push({
+          dealCode: 'DEAL-2026-003',
+          title: 'GPU Cluster Compliance Monitoring Pilot',
+          campaignId: ccr2.campaignId,
+          campaignCompanyRecordId: ccr2.id,
+          companyId: ccr2.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccr2.companyId)?.id ?? null,
+          ownerId: ccr2.assignedToId || sofia.id,
+          stage: 'DISCOVERY',
+          amount: 28000,
+          probability: 20,
+          expectedCloseDate: daysOffset(45),
+          lossReason: null,
+          notes: 'Initial discovery scoping underway following board priority review.',
+          closedAt: null,
+        });
+      }
+
+      const ccrWon = allCCRs[12] || allCCRs[3];
+      if (ccrWon) {
+        sampleDeals.push({
+          dealCode: 'DEAL-2026-004',
+          title: 'SAP S/4HANA Plant Telemetry Connector',
+          campaignId: ccrWon.campaignId,
+          campaignCompanyRecordId: ccrWon.id,
+          companyId: ccrWon.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccrWon.companyId)?.id ?? null,
+          ownerId: ccrWon.assignedToId || jordan.id,
+          stage: 'CLOSED_WON',
+          amount: 85000,
+          probability: 100,
+          expectedCloseDate: daysOffset(-3),
+          lossReason: null,
+          notes: 'Signed 12-month enterprise license following DACH manufacturing briefing.',
+          closedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+        });
+      }
+
+      const ccrLost = allCCRs[8] || allCCRs[4];
+      if (ccrLost && devon) {
+        sampleDeals.push({
+          dealCode: 'DEAL-2026-005',
+          title: 'Treasury Reconciliation Sandbox License',
+          campaignId: ccrLost.campaignId,
+          campaignCompanyRecordId: ccrLost.id,
+          companyId: ccrLost.companyId,
+          contactId: allContacts.find((c) => c.companyId === ccrLost.companyId)?.id ?? null,
+          ownerId: ccrLost.assignedToId || devon.id,
+          stage: 'CLOSED_LOST',
+          amount: 22000,
+          probability: 0,
+          expectedCloseDate: daysOffset(-7),
+          lossReason: 'Deferred to internal engineering build',
+          notes: 'VP Eng prioritized in-house ledger script for Q4; revisit in H2.',
+          closedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        });
+      }
+
+      if (sampleDeals.length > 0) {
+        await db.insert(deals).values(sampleDeals).onConflictDoNothing();
+      }
+    }
+  }
+}
+
 async function runSeed(): Promise<void> {
   const statusCount = await db.select({ count: sql<number>`count(*)::int` }).from(prospectStatuses);
   if ((statusCount[0]?.count ?? 0) > 0) {
     await ensureDemoAccounts();
+    await ensureEnterpriseSeed();
     return;
   }
 
@@ -1278,4 +1676,5 @@ async function runSeed(): Promise<void> {
   ]);
 
   await ensureDemoAccounts();
+  await ensureEnterpriseSeed();
 }

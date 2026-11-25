@@ -19,6 +19,9 @@ import { AppointmentsPage } from './pages/AppointmentsPage.tsx';
 import { DataRequestsPage } from './pages/DataRequestsPage.tsx';
 import { EmployeesPage, LeaveRequestsPage } from './pages/EmployeesHrPage.tsx';
 import { ReportsPage } from './pages/ReportsPage.tsx';
+import { TemplatesSequencesPage } from './pages/TemplatesSequencesPage.tsx';
+import { DncCompliancePage } from './pages/DncCompliancePage.tsx';
+import { PipelinePage } from './pages/PipelinePage.tsx';
 import {
   AuditLogsPage,
   NotificationsPage,
@@ -38,10 +41,13 @@ const BREADCRUMBS: Record<NavRoute, string> = {
   employees: 'HR & Employees',
   leaves: 'Leave Requests',
   workspace: 'Prospecting Queue',
+  pipeline: 'Deal Pipeline',
   activities: 'Outreach Activities',
   'follow-ups': 'Follow-up Manager',
   appointments: 'Appointments',
   reports: 'Performance Reports',
+  'templates-sequences': 'Templates & Automated Cadences',
+  'dnc-compliance': 'DNC Suppression & Compliance',
   notifications: 'Notifications',
   'audit-logs': 'Audit Logs',
   settings: 'System Settings',
@@ -109,6 +115,8 @@ function MainRouter() {
             onClearInitialRecord={() => setSelectedRecordId(null)}
           />
         );
+      case 'pipeline':
+        return <PipelinePage onOpenRecord={openProspectRecord} />;
       case 'activities':
         return <ActivitiesPage onOpenRecord={openProspectRecord} />;
       case 'follow-ups':
@@ -123,6 +131,10 @@ function MainRouter() {
         return <LeaveRequestsPage />;
       case 'reports':
         return <ReportsPage />;
+      case 'templates-sequences':
+        return <TemplatesSequencesPage />;
+      case 'dnc-compliance':
+        return <DncCompliancePage />;
       case 'notifications':
         return <NotificationsPage onNavigate={setRoute} />;
       case 'audit-logs':
@@ -137,7 +149,13 @@ function MainRouter() {
   };
 
   return (
-    <AppShell activeRoute={route} breadcrumb={BREADCRUMBS[route]} onNavigate={setRoute}>
+    <AppShell
+      activeRoute={route}
+      breadcrumb={BREADCRUMBS[route]}
+      onNavigate={setRoute}
+      onOpenCampaign={openCampaign}
+      onOpenProspectRecord={openProspectRecord}
+    >
       {renderPage()}
     </AppShell>
   );

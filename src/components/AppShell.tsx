@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   LayoutDashboard,
   Megaphone,
@@ -23,10 +23,17 @@ import {
   X,
   UserCircle2,
   CalendarOff,
+  GitBranch,
+  ShieldBan,
+  DollarSign,
+  Search,
 } from 'lucide-react';
 import { useAuth, AppRole } from '../contexts/AuthContext.tsx';
-import { cn, formatRoleLabel } from '../lib/utils.ts';
+import { cn, formatCurrency, formatRoleLabel } from '../lib/utils.ts';
 import { apiFetch } from '../lib/api.ts';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog.tsx';
+import { Input } from './ui/form.tsx';
+import { StatusLabel } from './StatusLabel.tsx';
 
 export type NavRoute =
   | 'dashboard'
@@ -40,10 +47,13 @@ export type NavRoute =
   | 'employees'
   | 'leaves'
   | 'workspace'
+  | 'pipeline'
   | 'activities'
   | 'follow-ups'
   | 'appointments'
   | 'reports'
+  | 'templates-sequences'
+  | 'dnc-compliance'
   | 'notifications'
   | 'audit-logs'
   | 'settings'
@@ -59,6 +69,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER', 'HR_MANAGER', 'SALES_REP'] },
   { id: 'workspace', label: 'Prospecting Queue', icon: Briefcase, roles: ['SALES_REP', 'SUPER_ADMIN'] },
+  { id: 'pipeline', label: 'Deal Pipeline', icon: DollarSign, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER', 'SALES_REP'] },
   { id: 'campaigns', label: 'Campaigns', icon: Megaphone, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER', 'SALES_REP'] },
   { id: 'companies', label: 'Companies', icon: Building2, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'] },
   { id: 'contacts', label: 'Contacts', icon: Users, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'] },
@@ -69,6 +80,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'follow-ups', label: 'Follow-ups', icon: Clock, roles: ['SUPER_ADMIN', 'CAMPAIGN_MANAGER', 'SALES_REP'] },
   { id: 'appointments', label: 'Appointments', icon: CalendarCheck2, roles: ['SUPER_ADMIN', 'SALES_REP', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'] },
   { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'] },
+  { id: 'templates-sequences', label: 'Templates & Cadences', icon: GitBranch, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER', 'SALES_REP'] },
+  { id: 'dnc-compliance', label: 'DNC & Compliance', icon: ShieldBan, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'] },
   { id: 'employees', label: 'HR & Employees', icon: UserCog, roles: ['SUPER_ADMIN', 'HR_MANAGER'] },
   { id: 'leaves', label: 'Leave Requests', icon: CalendarOff, roles: ['SUPER_ADMIN', 'HR_MANAGER', 'SALES_REP', 'DATA_MANAGER', 'CAMPAIGN_MANAGER'] },
   { id: 'notifications', label: 'Notifications', icon: Bell, roles: ['SUPER_ADMIN', 'DATA_MANAGER', 'CAMPAIGN_MANAGER', 'HR_MANAGER', 'SALES_REP'] },
@@ -81,16 +94,56 @@ export function AppShell({
   activeRoute,
   breadcrumb,
   onNavigate,
+  onOpenCampaign,
+  onOpenProspectRecord,
   children,
 }: {
   activeRoute: NavRoute;
   breadcrumb: string;
   onNavigate: (route: NavRoute) => void;
+  onOpenCampaign?: (campaignId: number) => void;
+  onOpenProspectRecord?: (recordId: number) => void;
   children: React.ReactNode;
 }) {
   const { user, darkMode, toggleDarkMode, unreadNotifications, recentNotifications, logout, refreshProfile } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any>(null);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setSearchResults(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
+        setSearchResults(res.results);
+      } catch {
+        setSearchResults(null);
+      } finally {
+        setSearching(false);
+      }
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [searchQuery, searchOpen]);
 
   if (!user) return null;
 
@@ -206,6 +259,19 @@ export function AppShell({
 
           <div className="flex items-center gap-2 shrink-0 relative">
             <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="h-9 px-3 flex items-center gap-2 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs cursor-pointer whitespace-nowrap shrink-0"
+              aria-label="Global quick search"
+            >
+              <Search className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Quick search...</span>
+              <span className="hidden md:inline font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                Ctrl+K
+              </span>
+            </button>
+
+            <button
               onClick={toggleDarkMode}
               className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
               aria-label="Toggle color theme"
@@ -265,6 +331,7 @@ export function AppShell({
                           else if (n.linkPath?.includes('appointments')) onNavigate('appointments');
                           else if (n.linkPath?.includes('data-requests')) onNavigate('data-requests');
                           else if (n.linkPath?.includes('workspace')) onNavigate('workspace');
+                          else if (n.linkPath?.includes('pipeline')) onNavigate('pipeline');
                           else onNavigate('notifications');
                         }}
                         className={cn(
@@ -285,6 +352,156 @@ export function AppShell({
 
         <main className="flex-1 p-4 lg:p-6 max-w-[1440px] w-full mx-auto">{children}</main>
       </div>
+
+      {/* Global Quick Search Modal */}
+      <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Quick Search (Prospects, Campaigns, Deals, Contacts)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 mt-1">
+            <div className="relative">
+              <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+              <Input
+                autoFocus
+                className="pl-9"
+                placeholder="Type at least 2 characters (company, contact, deal, campaign)..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+
+            {searching && <div className="text-xs text-slate-400 py-4 text-center">Searching workspace...</div>}
+
+            {!searching && searchQuery.trim().length >= 2 && searchResults && (
+              <div className="max-h-96 overflow-y-auto space-y-3 divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                {searchResults.prospects?.length > 0 && (
+                  <div className="pt-2 space-y-1">
+                    <div className="font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Prospect Queue</div>
+                    {searchResults.prospects.map((p: any) => (
+                      <button
+                        key={p.recordId}
+                        type="button"
+                        onClick={() => {
+                          setSearchOpen(false);
+                          onOpenProspectRecord?.(p.recordId);
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left cursor-pointer"
+                      >
+                        <div>
+                          <div className="font-medium text-slate-900 dark:text-white">{p.companyName}</div>
+                          <div className="text-slate-500">{p.campaignName}</div>
+                        </div>
+                        <StatusLabel status={p.status} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {searchResults.deals?.length > 0 && (
+                  <div className="pt-2 space-y-1">
+                    <div className="font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Deal Pipeline</div>
+                    {searchResults.deals.map((d: any) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => {
+                          setSearchOpen(false);
+                          onNavigate('pipeline');
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left cursor-pointer"
+                      >
+                        <div>
+                          <div className="font-medium text-slate-900 dark:text-white">{d.title}</div>
+                          <div className="text-slate-500 font-mono">{d.dealCode} · {d.companyName}</div>
+                        </div>
+                        <span className="font-mono font-semibold tabular-nums">{formatCurrency(d.amount)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {searchResults.campaigns?.length > 0 && (
+                  <div className="pt-2 space-y-1">
+                    <div className="font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Campaigns</div>
+                    {searchResults.campaigns.map((c: any) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setSearchOpen(false);
+                          onOpenCampaign?.(c.id);
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left cursor-pointer"
+                      >
+                        <div>
+                          <div className="font-medium text-slate-900 dark:text-white">{c.name}</div>
+                          <div className="text-slate-500 font-mono">{c.campaignCode}</div>
+                        </div>
+                        <StatusLabel status={c.status} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {searchResults.contacts?.length > 0 && (
+                  <div className="pt-2 space-y-1">
+                    <div className="font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Contacts</div>
+                    {searchResults.contacts.map((ct: any) => (
+                      <button
+                        key={ct.id}
+                        type="button"
+                        onClick={() => {
+                          setSearchOpen(false);
+                          onNavigate(user.role === 'SALES_REP' ? 'workspace' : 'contacts');
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left cursor-pointer"
+                      >
+                        <div>
+                          <div className="font-medium text-slate-900 dark:text-white">{ct.fullName}</div>
+                          <div className="text-slate-500">{ct.jobTitle || 'Contact'} · {ct.companyName}</div>
+                        </div>
+                        <span className="font-mono text-slate-500">{ct.workEmail || '—'}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {searchResults.companies?.length > 0 && (
+                  <div className="pt-2 space-y-1">
+                    <div className="font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Companies</div>
+                    {searchResults.companies.map((comp: any) => (
+                      <button
+                        key={comp.id}
+                        type="button"
+                        onClick={() => {
+                          setSearchOpen(false);
+                          onNavigate('companies');
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left cursor-pointer"
+                      >
+                        <div>
+                          <div className="font-medium text-slate-900 dark:text-white">{comp.name}</div>
+                          <div className="text-slate-500">{comp.industry || 'Industry N/A'}</div>
+                        </div>
+                        <span className="font-mono text-slate-500">{comp.domain || '—'}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {searchResults.prospects?.length === 0 &&
+                  searchResults.deals?.length === 0 &&
+                  searchResults.campaigns?.length === 0 &&
+                  searchResults.contacts?.length === 0 &&
+                  searchResults.companies?.length === 0 && (
+                    <div className="py-6 text-center text-slate-400">No matching records found.</div>
+                  )}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
