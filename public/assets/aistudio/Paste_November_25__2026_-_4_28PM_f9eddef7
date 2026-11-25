@@ -1,0 +1,1151 @@
+# Build a Complete B2B Prospecting, Data Distribution & Sales Operations CRM
+
+Build a professional, modern, full-stack web application for a B2B lead generation, prospecting, cold calling, LinkedIn outreach, email outreach, and appointment-setting company.
+
+The purpose of this system is to replace our current manual operations, where data managers download company and contact data from Apollo or other sources, manually analyze and filter the data using AI, distribute Excel sheets to sales representatives, and then have no central system to track which companies have been contacted, what happened, who is working on which company, or whether appointments were booked.
+
+We want one centralized application that manages the entire workflow from data collection and importing, campaign creation, data distribution, prospecting, follow-ups, appointment setting, employee management, and reporting.
+
+## 1. Technology Stack
+
+Build this using:
+
+- Frontend: Next.js with App Router
+- Language: TypeScript
+- UI: Tailwind CSS
+- Components: shadcn/ui
+- Icons: Lucide
+- Backend: Next.js API routes or a clean backend architecture
+- Database: PostgreSQL
+- ORM: Prisma
+- Authentication: Secure authentication with session management
+- Charts: Recharts
+- Excel/CSV Import: Support Excel, CSV and bulk file uploads
+- Responsive design: Desktop-first but fully responsive
+
+The application should be self-hostable on a VPS using Docker.
+
+Build a real functional application, not just static screens or a UI prototype. All forms, buttons, filters, imports, actions, dashboards and workflows must connect to the database and function properly.
+
+---
+
+# 2. User Roles & Permissions
+
+Create four main user roles.
+
+### A. Super Admin
+
+The Super Admin can:
+
+- Access the entire application.
+- View all campaigns.
+- View all imported data.
+- View all employees.
+- View all data assignments.
+- View every employee's activities.
+- View all appointments.
+- View all reports.
+- Manage campaign assignments.
+- Manage data managers, HR and sales representatives.
+- Configure application settings.
+- View the complete company-wide performance dashboard.
+- Monitor data duplication and distribution.
+- View all historical activities and audit logs.
+
+### B. Data Manager
+
+The Data Manager is responsible for preparing and distributing prospecting data.
+
+Permissions:
+
+- Import company and contact datasets.
+- Upload Excel and CSV files.
+- Create campaigns.
+- Manage campaigns assigned to them.
+- Review imported records.
+- Clean and validate records.
+- Use AI-based data scoring fields if available.
+- Categorize data.
+- Identify duplicate companies and contacts.
+- Request or assign data to sales representatives.
+- Monitor how much data has been distributed.
+- View which records have been worked on.
+- View unworked records.
+- Request additional data.
+- Manage campaign data allocations.
+
+Data managers should not have access to restricted admin functions such as employee password management, system settings or full company administration.
+
+### C. HR Manager
+
+HR should be able to:
+
+- Create new employee accounts.
+- Create sales representative accounts.
+- Create data manager accounts.
+- Create manager accounts.
+- Assign employee roles.
+- Activate and deactivate employees.
+- Reset passwords.
+- View employee profiles.
+- View employee joining dates.
+- Assign departments.
+- Maintain employee details.
+- Track leave requests if a leave module is available.
+- Assign training and company policies if an HR module is added later.
+
+HR should be able to manage employees without accessing restricted sales data unless specifically granted permission.
+
+### D. Sales Representative / Prospecting Executive
+
+Sales representatives should:
+
+- Log in to their own account.
+- See only the companies and contacts assigned to them.
+- See their assigned campaigns.
+- See records that have not yet been worked on.
+- See their previously worked records.
+- View company websites.
+- View LinkedIn company and prospect profile links.
+- Record calls, emails, LinkedIn outreach and WhatsApp outreach activities.
+- Record outcomes.
+- Add remarks and notes.
+- Create follow-up reminders.
+- Schedule appointments.
+- View their own performance.
+- Request additional prospecting data.
+- View their own follow-up tasks.
+- View their appointment calendar.
+
+Sales representatives must not see records assigned to other representatives unless explicitly permitted by their manager.
+
+---
+
+# 3. Admin Dashboard
+
+Create a professional dashboard for administrators.
+
+Show the following summary cards:
+
+- Total Companies Imported
+- Total Contacts Imported
+- Total Unique Companies
+- Total Campaigns
+- Active Campaigns
+- Completed Campaigns
+- Total Data Distributed
+- Data Yet to Be Distributed
+- Total Data Assigned
+- Data Worked On
+- Data Not Yet Worked
+- Total Calls
+- Total LinkedIn Outreach
+- Total Emails Sent
+- Total WhatsApp Outreach
+- Total Follow-ups Pending
+- Total Appointments Booked
+- Total Interested Prospects
+- Total Qualified Leads
+- Total Unqualified Leads
+
+Create charts:
+
+- Data import trend.
+- Data distribution trend.
+- Campaign-wise data distribution.
+- Campaign-wise progress.
+- Sales representative performance.
+- Call activity.
+- LinkedIn activity.
+- Email activity.
+- Appointments booked.
+- Interested leads.
+- Follow-up status.
+
+Create filters for:
+
+- Date range.
+- Campaign.
+- Data manager.
+- Sales representative.
+- Lead status.
+- Outreach channel.
+
+The dashboard should display real database data.
+
+---
+
+# 4. Campaign Management
+
+Create a complete campaign management system.
+
+Each campaign should contain:
+
+- Campaign name.
+- Campaign ID.
+- Campaign description.
+- Client or project name.
+- Campaign objective.
+- Target industry.
+- Target countries.
+- Target job titles.
+- Target company size.
+- Campaign start date.
+- Campaign end date.
+- Campaign manager.
+- Data manager.
+- Assigned sales representatives.
+- Campaign status.
+- Total target companies.
+- Total contacts.
+- Total data allocated.
+- Total data worked on.
+- Total appointments.
+- Campaign notes.
+- Campaign instructions.
+- Campaign-specific qualification questions.
+- Campaign-specific lead qualification criteria.
+
+Campaign status:
+
+- Draft
+- Ready
+- Active
+- Paused
+- Completed
+- Archived
+
+Create a campaign details page.
+
+Inside the campaign, provide tabs:
+
+- Overview
+- Companies
+- Contacts
+- Data Distribution
+- Sales Team
+- Activities
+- Follow-ups
+- Appointments
+- Reports
+- Campaign Instructions
+
+Administrators should be able to see the entire campaign workflow.
+
+---
+
+# 5. Data Import & Data Management
+
+Create a data management module where data managers can import datasets from Apollo, CSV, Excel, other lead providers, or manually.
+
+Import fields may include:
+
+## Company Fields
+
+- Company Name
+- Website
+- Company Domain
+- LinkedIn Company URL
+- Industry
+- Employee Size
+- Country
+- State
+- City
+- Revenue
+- Company Description
+- AI Score
+- Fit Score
+- Data Source
+- Campaign
+
+## Contact Fields
+
+- First Name
+- Last Name
+- Full Name
+- Job Title
+- Department
+- Seniority
+- Work Email
+- Phone Number
+- LinkedIn Profile URL
+- Company Name
+- Company Domain
+- Country
+- Data Source
+- AI Score
+- Fit Score
+
+Allow the data manager to map uploaded Excel columns to the application fields before importing.
+
+Include:
+
+- Import preview.
+- Column mapping.
+- Data validation.
+- Invalid records report.
+- Missing information report.
+- Duplicate detection.
+- Import history.
+- Import batch ID.
+- Import date.
+- Imported by.
+- Data source tracking.
+- Campaign selection.
+
+## Duplicate Prevention System
+
+This is one of the most important features.
+
+The application must prevent the same company or contact from being distributed multiple times unnecessarily.
+
+Create duplicate detection based on:
+
+- Normalized company domain.
+- Company website.
+- Company name.
+- Contact email.
+- Contact LinkedIn profile URL.
+- Contact phone number.
+- Normalized company/contact identifiers.
+
+Create a centralized company and contact database.
+
+A company should not be treated as a new company just because it appears in a different Excel file.
+
+When duplicate records are detected:
+
+- Show the existing record.
+- Show the previous campaigns associated with it.
+- Show previous assigned sales representatives.
+- Show previous outreach history.
+- Show previous campaign results.
+- Allow the data manager to decide whether the record can be reused in a new campaign based on permissions and campaign rules.
+
+Create a duplicate warning before distribution.
+
+Maintain a complete history of every company and contact.
+
+---
+
+# 6. Data Distribution & Assignment Management
+
+Build a complete data distribution module.
+
+The data manager should be able to:
+
+1. Select a campaign.
+2. Select companies and contacts.
+3. Select sales representatives.
+4. Distribute data individually or in bulk.
+5. Set the quantity of records assigned to each employee.
+6. Set distribution date.
+7. Add assignment instructions.
+8. Set deadlines if necessary.
+9. View assignment progress.
+
+Example:
+
+Campaign: US IT Decision Makers
+
+- 5,000 companies imported.
+- 3,000 approved.
+- 2,000 yet to be distributed.
+- 500 assigned to Representative A.
+- 500 assigned to Representative B.
+- 500 assigned to Representative C.
+- 500 assigned to Representative D.
+
+The dashboard must automatically calculate:
+
+- Total data available.
+- Total data distributed.
+- Total data worked on.
+- Total data pending.
+- Total data completed.
+- Total data assigned to each representative.
+- Total records remaining in the campaign.
+- Data distribution history.
+
+## Assignment Rules
+
+- Do not assign the same company/contact to multiple representatives within the same campaign unless an administrator explicitly allows it.
+- Do not allow accidental duplicate assignment.
+- Maintain an assignment history.
+- Allow authorized managers to reassign records.
+- Preserve previous activity history when records are reassigned.
+- Track who assigned the data.
+- Track who reassigned the data.
+- Track assignment timestamps.
+- Track campaign and employee association.
+
+Create a visual data distribution interface with bulk assignment.
+
+---
+
+# 7. Sales Representative Workspace
+
+This is the primary workspace used by sales representatives.
+
+Create a clean, simple and productivity-focused interface.
+
+When a sales representative logs in, show:
+
+- My Assigned Campaigns.
+- Total Assigned Companies.
+- Not Yet Worked.
+- Worked.
+- Follow-ups Due Today.
+- Overdue Follow-ups.
+- Appointments Booked.
+- Interested Prospects.
+- Daily Activity.
+- Weekly Performance.
+
+## My Prospecting Data
+
+Create a table displaying:
+
+- Company Name.
+- Website.
+- LinkedIn Company URL.
+- Contact Name.
+- Job Title.
+- Email.
+- Phone.
+- LinkedIn Profile.
+- Campaign.
+- Assignment Date.
+- Status.
+- Last Activity.
+- Next Follow-up.
+
+Allow filtering by:
+
+- Campaign.
+- Not Yet Worked.
+- Worked.
+- Interested.
+- Not Interested.
+- Follow-up.
+- Appointment.
+- Contacted.
+- Date.
+
+Represent the status visually.
+
+The sales representative should be able to open each company/contact record and work on it.
+
+---
+
+# 8. Company & Contact Prospecting Workspace
+
+When a sales representative opens a record, show a detailed prospecting workspace.
+
+## Company Details
+
+Display:
+
+- Company name.
+- Website.
+- LinkedIn company URL.
+- Industry.
+- Employee size.
+- Country.
+- Company description.
+- Campaign information.
+- AI score.
+- Fit score.
+
+## Contact Details
+
+Display:
+
+- Contact name.
+- Job title.
+- Email.
+- Phone.
+- LinkedIn profile.
+- Department.
+- Seniority.
+
+Create buttons or links for:
+
+- Open Company Website.
+- Open LinkedIn Company Page.
+- Open Contact LinkedIn Profile.
+- Email Contact.
+- Call Contact.
+
+These should open the appropriate external pages or applications.
+
+## Record Outreach Activity
+
+The sales representative should be able to log each interaction.
+
+Outreach channels:
+
+- Phone Call.
+- LinkedIn Connection Request.
+- LinkedIn Message.
+- Email.
+- WhatsApp.
+- Other.
+
+Each activity should record:
+
+- Activity date.
+- Activity time.
+- Channel.
+- Activity type.
+- Activity outcome.
+- Notes.
+- Prospect response.
+- Follow-up date.
+- Created by.
+- Campaign.
+- Contact.
+
+The representative should be able to log multiple activities against the same company or contact.
+
+Maintain the complete activity timeline.
+
+Example timeline:
+
+- 25 November: First cold call, no answer.
+- 26 November: LinkedIn connection request sent.
+- 28 November: Connection accepted.
+- 28 November: LinkedIn message sent.
+- 30 November: Prospect requested an email.
+- 1 December: Email sent.
+- 3 December: Prospect agreed to an appointment.
+- 5 December: Appointment scheduled.
+
+All activity records must be stored permanently.
+
+---
+
+# 9. Prospect Status & Outcome Management
+
+Create configurable statuses for prospecting.
+
+Suggested statuses:
+
+- Not Yet Worked
+- Researching
+- Attempted Contact
+- No Answer
+- Connected
+- LinkedIn Request Sent
+- LinkedIn Request Accepted
+- LinkedIn Message Sent
+- Email Sent
+- WhatsApp Sent
+- Interested
+- Follow-up Required
+- Appointment Booked
+- Qualified Lead
+- Not Qualified
+- Not Interested
+- Wrong Contact
+- Invalid Contact
+- Invalid Data
+- Do Not Contact
+- Completed
+
+The application should allow admins to manage statuses.
+
+Each representative must select an outcome when recording their activity.
+
+The record's status should update based on the selected outcome and configured workflow rules.
+
+Do not rely on free-text remarks alone to determine the record's status.
+
+---
+
+# 10. Follow-up Management
+
+Create a complete follow-up management module.
+
+Sales representatives must be able to create follow-ups based on prospect conversations.
+
+Follow-up types:
+
+- Call.
+- Email.
+- LinkedIn Message.
+- WhatsApp.
+- Other.
+
+Follow-up fields:
+
+- Company.
+- Contact.
+- Campaign.
+- Follow-up type.
+- Follow-up date.
+- Follow-up time.
+- Reminder.
+- Follow-up notes.
+- Assigned representative.
+- Follow-up status.
+
+Follow-up statuses:
+
+- Pending.
+- Completed.
+- Rescheduled.
+- Cancelled.
+- Overdue.
+
+Create:
+
+- Follow-up list.
+- Today’s follow-ups.
+- Upcoming follow-ups.
+- Overdue follow-ups.
+- Calendar view.
+
+Notify representatives about due follow-ups inside the application.
+
+Allow representatives to mark follow-ups as completed and create another follow-up.
+
+Do not lose the history of previous follow-ups.
+
+---
+
+# 11. Appointment Management
+
+Create a dedicated appointment management module.
+
+When a prospect agrees to an appointment, the representative should be able to record:
+
+- Company.
+- Prospect name.
+- Job title.
+- Phone.
+- Email.
+- Campaign.
+- Assigned representative.
+- Appointment date.
+- Appointment time.
+- Time zone.
+- Meeting type.
+- Meeting link.
+- Meeting location.
+- Appointment notes.
+- Prospect requirements.
+- Appointment status.
+- Appointment confirmation status.
+
+Appointment status:
+
+- Scheduled.
+- Confirmed.
+- Pending Confirmation.
+- Rescheduled.
+- Completed.
+- No Show.
+- Cancelled.
+
+Create an appointment calendar.
+
+Admin should be able to view all appointments.
+
+Sales representatives should be able to view their own appointments.
+
+Campaign managers should be able to view campaign appointments.
+
+Provide appointment reporting:
+
+- Total appointments.
+- Appointments by campaign.
+- Appointments by representative.
+- Confirmed appointments.
+- Completed appointments.
+- No-shows.
+- Rescheduled appointments.
+
+---
+
+# 12. Prospect Response & Conversation Notes
+
+Create a structured prospect conversation notes system.
+
+Representatives should be able to record what the prospect said.
+
+Examples:
+
+- Prospect asked to send an email.
+- Prospect is not available this week.
+- Prospect asked to contact next month.
+- Prospect is interested in the product.
+- Prospect requested WhatsApp communication.
+- Prospect agreed to a meeting.
+- Prospect declined.
+- Prospect asked not to be contacted again.
+
+Create structured response categories:
+
+- Interested.
+- Not Interested.
+- Send Email.
+- Call Later.
+- WhatsApp Follow-up.
+- Meeting Agreed.
+- Meeting Pending.
+- No Response.
+- Wrong Contact.
+- Do Not Contact.
+- Other.
+
+Allow representatives to record detailed notes.
+
+Maintain a permanent activity timeline.
+
+---
+
+# 13. Sales Representative Performance Dashboard
+
+Each sales representative should have their own dashboard.
+
+Display:
+
+- Total assigned companies.
+- Total assigned contacts.
+- Data yet to be worked.
+- Companies researched.
+- Calls attempted.
+- Calls connected.
+- LinkedIn connection requests.
+- LinkedIn messages.
+- Emails sent.
+- WhatsApp messages.
+- Interested prospects.
+- Qualified leads.
+- Appointments booked.
+- Appointments completed.
+- Follow-ups pending.
+- Follow-ups overdue.
+- Daily activity.
+- Weekly activity.
+- Monthly activity.
+
+Create performance charts.
+
+Allow employees to see their own progress.
+
+---
+
+# 14. Admin Sales Performance & Reporting
+
+Create a complete reporting module for Admin and Managers.
+
+Reports should include:
+
+## Employee Performance
+
+Compare representatives based on:
+
+- Assigned data.
+- Worked data.
+- Call attempts.
+- Connected calls.
+- LinkedIn outreach.
+- Emails.
+- WhatsApp.
+- Interested prospects.
+- Qualified leads.
+- Appointments.
+- Follow-up completion.
+- Conversion rates.
+
+## Campaign Performance
+
+- Total imported companies.
+- Total contacts.
+- Total assigned.
+- Total worked.
+- Total remaining.
+- Total calls.
+- Total outreach.
+- Total interested prospects.
+- Total appointments.
+- Campaign conversion rate.
+
+## Data Manager Performance
+
+- Total data imported.
+- Total records validated.
+- Total duplicates detected.
+- Total records distributed.
+- Total campaigns created.
+- Total data requests fulfilled.
+
+## Activity Reports
+
+Create filters:
+
+- Date range.
+- Campaign.
+- Representative.
+- Data manager.
+- Channel.
+- Outcome.
+
+Allow CSV and Excel export.
+
+---
+
+# 15. Request New Data
+
+Sales representatives should be able to raise a data request.
+
+Example:
+
+"I need another 300 companies from the US SaaS industry targeting CTOs."
+
+Data request fields:
+
+- Request title.
+- Campaign.
+- Industry.
+- Country.
+- Target job titles.
+- Company size.
+- Quantity required.
+- Reason for request.
+- Priority.
+- Request date.
+- Requested by.
+- Status.
+- Manager remarks.
+
+Request statuses:
+
+- Pending.
+- Approved.
+- Rejected.
+- In Progress.
+- Fulfilled.
+- Cancelled.
+
+Admin and data managers should be able to:
+
+- View all requests.
+- Approve requests.
+- Reject requests.
+- Add comments.
+- Fulfill requests.
+- Allocate data.
+- Assign data to representatives.
+
+Sales representatives should see the status of their requests.
+
+---
+
+# 16. HR & Employee Management
+
+Create an employee management module.
+
+HR should be able to create accounts for:
+
+- Sales Representatives.
+- Prospecting Executives.
+- Data Managers.
+- Campaign Managers.
+- Admins, where authorized.
+
+Employee fields:
+
+- Full Name.
+- Employee ID.
+- Email.
+- Phone.
+- Department.
+- Job Role.
+- Joining Date.
+- Reporting Manager.
+- Employment Status.
+- Username.
+- Password setup.
+- Profile photo.
+
+Create:
+
+- Employee list.
+- Employee details.
+- Add employee.
+- Edit employee.
+- Activate/deactivate employee.
+- Reset password.
+- Role assignment.
+- Reporting structure.
+
+Newly created employees should be able to log in and access their role-specific dashboard.
+
+Use secure password handling. Do not store plain-text passwords.
+
+Prefer invitations or a secure password-reset mechanism instead of displaying permanent passwords.
+
+---
+
+# 17. Notifications
+
+Create an in-app notification system.
+
+Notifications for:
+
+- New data assigned.
+- Campaign assignment.
+- Follow-up due.
+- Follow-up overdue.
+- Appointment booked.
+- Appointment rescheduled.
+- Appointment reminder.
+- Data request approved.
+- Data request rejected.
+- Data request fulfilled.
+- Campaign instructions updated.
+- Record reassigned.
+
+Each notification should be linked to the relevant record.
+
+---
+
+# 18. Audit Log
+
+Maintain an audit trail for important actions.
+
+Track:
+
+- Data imported.
+- Data assigned.
+- Data reassigned.
+- Campaign created.
+- Campaign updated.
+- Contact updated.
+- Activity logged.
+- Appointment created.
+- Appointment modified.
+- Data request approved.
+- Employee created.
+- Employee deactivated.
+- Record status changed.
+
+Audit log fields:
+
+- User.
+- Action.
+- Entity.
+- Entity ID.
+- Timestamp.
+- Previous value, where appropriate.
+- New value, where appropriate.
+
+Admins should be able to search and filter the audit log.
+
+---
+
+# 19. Database Architecture
+
+Design a proper relational database.
+
+Create database models for:
+
+- Users.
+- Employees.
+- Roles.
+- Permissions.
+- Campaigns.
+- CampaignMembers.
+- Companies.
+- Contacts.
+- ImportBatches.
+- ImportRecords.
+- CampaignCompanyRecords.
+- CampaignContactRecords.
+- Assignments.
+- AssignmentHistory.
+- Activities.
+- ActivityNotes.
+- FollowUps.
+- Appointments.
+- DataRequests.
+- Notifications.
+- AuditLogs.
+- CampaignQualificationQuestions.
+- CampaignInstructions.
+
+Use proper foreign keys, indexes, relationships and constraints.
+
+Companies and contacts must be centralized and reusable across campaigns.
+
+Campaign-level assignments and activity history must remain independent so that a company can participate in different campaigns without losing its historical data.
+
+Implement duplicate prevention at the database and application levels wherever possible.
+
+---
+
+# 20. UI Design
+
+Build a modern, clean, professional B2B SaaS application.
+
+Design inspiration:
+
+- HubSpot.
+- Attio.
+- Linear.
+- modern sales operations dashboards.
+
+Use:
+
+- Sidebar navigation.
+- Clean dashboard cards.
+- Professional tables.
+- Search.
+- Advanced filters.
+- Pagination.
+- Bulk actions.
+- Dialogs.
+- Tabs.
+- Charts.
+- Activity timelines.
+- Calendar views.
+- Responsive layouts.
+
+Create role-specific navigation.
+
+### Admin Navigation
+
+- Dashboard.
+- Campaigns.
+- Companies.
+- Contacts.
+- Data Imports.
+- Data Distribution.
+- Data Requests.
+- Sales Team.
+- Activities.
+- Follow-ups.
+- Appointments.
+- Reports.
+- Notifications.
+- Audit Logs.
+- Settings.
+
+### Data Manager Navigation
+
+- Dashboard.
+- Campaigns.
+- Data Imports.
+- Companies.
+- Contacts.
+- Data Distribution.
+- Data Requests.
+- Reports.
+
+### Sales Representative Navigation
+
+- Dashboard.
+- My Campaigns.
+- My Prospecting Data.
+- My Activities.
+- Follow-ups.
+- Appointments.
+- Data Requests.
+- Notifications.
+- My Profile.
+
+### HR Navigation
+
+- HR Dashboard.
+- Employees.
+- Add Employee.
+- Employee Roles.
+- Leave Management (optional).
+- Training (optional).
+- Company Policies (optional).
+
+---
+
+# 21. Important Workflow
+
+The system must support this complete operational workflow:
+
+Step 1: Data manager imports companies and contacts from Apollo, Excel or CSV.
+
+Step 2: System validates and cleans data.
+
+Step 3: System identifies duplicates using company domain, email, LinkedIn URLs and other identifiers.
+
+Step 4: Data manager reviews the dataset and assigns it to a campaign.
+
+Step 5: Admin or campaign manager creates the campaign and defines its instructions and qualification criteria.
+
+Step 6: Data manager distributes data to sales representatives.
+
+Step 7: Sales representatives log in and view only their assigned data.
+
+Step 8: Sales representatives research the company and contact.
+
+Step 9: Sales representatives call, email, WhatsApp or perform LinkedIn outreach.
+
+Step 10: Sales representatives record outreach activity, response, outcome and remarks.
+
+Step 11: If a prospect asks for a follow-up, the representative creates a follow-up task.
+
+Step 12: If a prospect agrees to a meeting, the representative creates an appointment.
+
+Step 13: Admin monitors campaigns, assignments, activities, follow-ups, appointments and employee performance.
+
+Step 14: HR creates and manages employee accounts.
+
+Step 15: Sales representatives request additional data when their assigned data is insufficient.
+
+Step 16: Data managers review and fulfil requests.
+
+Step 17: Admin reviews reports and campaign performance.
+
+---
+
+# 22. Build Instructions
+
+Do not just create a landing page.
+
+Build the actual working application.
+
+Start by designing the database schema, authentication system, role-based access control and application architecture.
+
+Then implement the modules in a logical order:
+
+1. Authentication and role-based access control.
+2. Admin dashboard.
+3. Employee and HR management.
+4. Campaign management.
+5. Company and contact database.
+6. Excel and CSV import.
+7. Duplicate detection.
+8. Data distribution and assignment.
+9. Sales representative workspace.
+10. Activity tracking.
+11. Follow-up management.
+12. Appointment management.
+13. Data request management.
+14. Reporting.
+15. Notifications.
+16. Audit logs.
+
+Use realistic sample data for initial testing, but ensure the application is connected to a real database.
+
+Ensure the application has working CRUD functionality, proper authentication, secure permissions, data validation, loading states, error handling, pagination, search, filters and export functionality.
+
+Do not use fake dashboard statistics after the database is connected.
+
+Do not create non-functional buttons.
+
+Do not expose data belonging to one sales representative to another sales representative.
+
+Build the application so that it can later be deployed on a VPS using Docker and PostgreSQL.
+
+The final result should be a complete internal B2B prospecting and sales operations management platform that replaces our current manual Excel-based data distribution, prospecting tracking and appointment-setting workflow.

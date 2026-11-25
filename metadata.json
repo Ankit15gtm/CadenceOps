@@ -1,0 +1,6 @@
+{
+  "name": "CadenceOps",
+  "description": "B2B Prospecting, Data Distribution & Sales Operations CRM for managing lead imports, deduplication, campaign distribution, multi-channel outreach, follow-ups, appointments, and team performance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

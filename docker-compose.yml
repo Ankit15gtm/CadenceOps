@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cadenceops
+      POSTGRES_USER: cadenceops_user
+      POSTGRES_PASSWORD: change_this_secure_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cadenceops_user -d cadenceops"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      SQL_HOST: postgres
+      SQL_DB_NAME: cadenceops
+      SQL_USER: cadenceops_user
+      SQL_PASSWORD: change_this_secure_password
+      SQL_ADMIN_USER: cadenceops_user
+      SQL_ADMIN_PASSWORD: change_this_secure_password
+
+volumes:
+  pgdata:
